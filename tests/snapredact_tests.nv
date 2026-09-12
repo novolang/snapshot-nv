@@ -1,0 +1,147 @@
+// snapredact_tests.nv — what a redaction must NOT eat.
+//
+// RED ON PURPOSE: every body under `src/` is a `todo()`, so every
+// assertion here reaches `not implemented: snapshot-nv.<module>.<fn>`.
+//
+// THE FALSE POSITIVES ARE THE SUBJECT.  A redaction that matches too
+// loosely eats the value the test is actually about, and the snapshot
+// then passes forever no matter what the code does — the one failure
+// mode a person cannot see by reading the file.  So every case here
+// pairs a thing that must be replaced with a thing that must survive.
+
+use std.test
+use std.str
+use std.list
+use snapredact
+
+fn shout(value: Str) -> Str
+    str.upper(value)
+
+@test
+fn test_a_timestamp_goes_and_a_date_a_test_is_about_stays() [io]
+    let r = snapredact.timestamps()
+
+    test.case("an RFC 3339 instant is replaced")
+    test.assert(str.contains(snapredact.apply_all([r], "at 2026-09-11T10:00:00Z\n"),
+                             snapredact.placeholder()))
+
+    test.case("a bare calendar date is not a timestamp and survives")
+    test.assert(str.contains(snapredact.apply_all([r], "due 2026-09-11\n"), "2026-09-11"))
+
+    test.case("and the label says what it did")
+    test.assert(r.label == "timestamps")
+
+@test
+fn test_a_uuid_goes_and_a_hex_run_that_is_not_one_stays() [io]
+    let r = snapredact.uuids()
+
+    test.case("a canonical uuid is replaced")
+    let uuid = "id 6ba7b810-9dad-11d1-80b4-00c04fd430c8\n"
+    test.assert(str.contains(snapredact.apply_all([r], uuid), snapredact.placeholder()))
+
+    test.case("a 32-character hex run with no hyphens is not a uuid")
+    let hex = "sha 6ba7b8109dad11d180b400c04fd430c8\n"
+    test.assert(str.contains(snapredact.apply_all([r], hex), "6ba7b810"))
+
+@test
+fn test_the_hex_minimum_is_an_argument_because_the_right_one_varies() [io]
+    test.case("40 characters catches a git object id")
+    let long_run = "commit da39a3ee5e6b4b0d3255bfef95601890afd80709\n"
+    test.assert(str.contains(snapredact.apply_all([snapredact.hex_runs(40)], long_run),
+                             snapredact.placeholder()))
+
+    test.case("and leaves a short one alone, which is what a hex dump needs")
+    test.assert(str.contains(snapredact.apply_all([snapredact.hex_runs(40)], "byte 0x1f\n"),
+                             "1f"))
+
+@test
+fn test_a_path_prefix_is_a_prefix_and_not_a_guess() [io]
+    let r = snapredact.path_prefix("/tmp/novo-a2f4k9")
+
+    test.case("the temporary root is replaced wherever it appears")
+    let line = "wrote /tmp/novo-a2f4k9/out.json\n"
+    test.assert(str.contains(snapredact.apply_all([r], line), "/out.json"))
+    test.assert(str.contains(snapredact.apply_all([r], line), "novo-a2f4k9") == false)
+
+    test.case("and another path is untouched")
+    test.assert(str.contains(snapredact.apply_all([r], "wrote /etc/hosts\n"), "/etc/hosts"))
+
+@test
+fn test_a_field_redaction_keeps_the_key_so_the_shape_stays_under_test() [io]
+    let out = snapredact.apply_all([snapredact.field("created")],
+                                   "name: a\ncreated: 2026-09-11T10:00:00Z\n")
+
+    test.case("the key survives")
+    test.assert(str.contains(out, "created:"))
+
+    test.case("the value does not")
+    test.assert(str.contains(out, "2026") == false)
+
+    test.case("and another field is untouched")
+    test.assert(str.contains(out, "name: a"))
+
+@test
+fn test_a_json_member_is_reached_at_any_depth_and_the_output_is_still_json() [io]
+    let r = snapredact.json_member("id")
+    let doc = "{\"items\":[{\"id\":\"abc\",\"name\":\"a\"}]}"
+
+    test.case("a member inside an array inside an object is reached")
+    test.assert(str.contains(snapredact.apply_all([r], doc), "abc") == false)
+
+    test.case("and text that is not JSON is left exactly as it was")
+    test.assert(snapredact.apply_all([r], "not json at all\n") == "not json at all\n")
+
+@test
+fn test_the_regex_escape_hatch_refuses_quietly_and_reports_loudly() [io]
+    test.case("an invalid pattern changes nothing rather than raising")
+    test.assert(snapredact.apply_all([snapredact.matching("run [0-9")], "run 7\n")
+                == "run 7\n")
+
+    test.case("and pattern_ok is where a person is told")
+    test.assert(snapredact.pattern_ok("run [0-9") == false)
+    test.assert(snapredact.pattern_ok("run [0-9]+"))
+
+    test.case("a valid one replaces")
+    test.assert(str.contains(snapredact.apply_all([snapredact.matching("run [0-9]+")],
+                                                  "run 7\n"),
+                             snapredact.placeholder()))
+
+@test
+fn test_the_whitespace_redactions_are_opt_in() [io]
+    test.case("line endings are normalised only when asked")
+    test.assert(str.contains(snapredact.apply_all([snapredact.unix_newlines()], "a\r\nb\r\n"),
+                             "\r") == false)
+
+    test.case("trailing space is dropped only when asked")
+    test.assert(snapredact.apply_all([snapredact.trailing_space()], "a   \nb\n") == "a\nb\n")
+
+@test
+fn test_redactions_run_in_the_order_the_caller_wrote() [io]
+    // A path redaction after a timestamp one sees what the first
+    // produced, and two orders give two answers — so the order is the
+    // list's, not a set's.
+    let first = snapredact.redaction("shout", shout)
+    let out = snapredact.apply_all([first, snapredact.path_prefix("/TMP")], "/tmp/x\n")
+
+    test.case("the second redaction saw the first one's output")
+    test.assert(str.contains(out, "/tmp") == false)
+
+@test
+fn test_a_caller_writes_a_redaction_the_way_the_package_does() [io]
+    let mine = snapredact.redaction("shout", shout)
+
+    test.case("a label and a named function")
+    test.assert(mine.label == "shout")
+
+    test.case("applied like any other")
+    test.assert(snapredact.apply_all([mine], "abc") == "ABC")
+
+@test
+fn test_the_labels_are_what_the_header_records() [io]
+    let rs = snapredact.cli_defaults()
+
+    test.case("the default list is the four a tool's output needs")
+    test.assert(list.len(rs) == 4)
+
+    test.case("and every one of them has a label for the header")
+    test.assert(list.len(snapredact.labels(rs)) == list.len(rs))

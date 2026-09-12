@@ -1,0 +1,245 @@
+// snappolicy.nv — what a mismatch is allowed to do, as a value.
+//
+// Every body here is a `todo()`; the signatures are the design.
+//
+// THE POLICY IS AN ARGUMENT, NOT AN ENVIRONMENT VARIABLE.  insta reads
+// `INSTA_UPDATE` from the process environment inside the macro that
+// does the assertion, and syrupy reads `--snapshot-update` off the
+// command line into a global.  Three things follow from that and all
+// three are avoidable:
+//
+//   1. Every assertion inherits an `[io]` row, for a variable that is
+//      the same for the whole run.
+//   2. A runner cannot compare one suite and accept another in one
+//      process, because there is one global and it is read per call.
+//   3. The library cannot be tested by the library: a test of "a
+//      mismatch under SnapNever must not write" has to set an
+//      environment variable and hope nothing else read it first.
+//
+// Here `SnapConfig` travels down from the caller, `policy_from_env` is
+// ONE `[io]` function at the edge that a caller may or may not call,
+// and everything downstream is a pure function of the value.
+//
+// THE FOUR MODES ARE INSTA'S, and the names say which way each one
+// errs.  The default is `SnapNew`: never overwrite a stored snapshot,
+// always leave the evidence beside it.  A snapshot library whose
+// default silently rewrote the file it was comparing against would
+// make every test pass, which is the one failure mode that is not
+// detectable from the outside.
+
+// What the checker may do when the stored snapshot is missing or does
+// not match.
+pub enum SnapUpdate
+    // Compare only.  A missing snapshot is a failure, a mismatch is a
+    // failure, and nothing is written.  What continuous integration
+    // runs, and the mode that makes a forgotten `.snap` file fail
+    // rather than appear.
+    SnapNever
+    // Compare, and on a mismatch write a `.new` file beside the stored
+    // one.  A missing snapshot is still a failure, with the `.new`
+    // written so a person can look at what it would have been.  The
+    // default.
+    SnapNew
+    // Write the snapshot when it is MISSING, and a `.new` when it
+    // differs.  The mode for writing a new test: the first run records
+    // the snapshot and passes, and every later change still has to be
+    // reviewed.
+    SnapAuto
+    // Overwrite the stored snapshot with the actual value, always, and
+    // pass.  Deliberately last in the enum and deliberately awkward to
+    // spell: it turns the whole suite into a recording, and the only
+    // honest use is a bulk rename or a formatting change where the
+    // diff is reviewed in version control instead.
+    SnapAlways
+
+// Everything the checker needs that is not the value itself.
+//
+// A value the runner builds once and passes down, which is what makes
+// a run able to hold more than one policy — a suite under review and a
+// suite under comparison, in the same process.
+pub struct SnapConfig
+    update: SnapUpdate
+    // The directory snapshots live in, relative to the test source
+    // file's own directory.  `snapshots` by default, which is insta's
+    // and syrupy's convention and the one a reader of a repository
+    // already recognises.
+    dir: Str
+    // What a stored snapshot's filename ends with.
+    suffix: Str
+    // What a rejected snapshot's filename ends with.  Separate from
+    // `suffix` rather than derived, because a repository's ignore rules
+    // name it and a derived string cannot be pasted into one.
+    new_suffix: Str
+    // How many lines of rendered diff a failure message carries before
+    // it is cut, with the count of what was cut on the end.  A
+    // thousand-line diff in a test log buries every other failure in
+    // the run.
+    max_diff_lines: Int
+    // Whether a stored snapshot no test asked for is a failure.  Off by
+    // default: the check needs the whole run's set of used names, which
+    // only a runner has, so this is a flag a runner turns on rather
+    // than something an assertion can decide.
+    require_all_used: Bool
+
+// The default configuration: `SnapNew`, `snapshots/`, `.snap`,
+// `.snap.new`, 120 diff lines, unused snapshots tolerated.
+//
+// ```novo
+// use snappolicy
+//
+// fn main() [io]
+//     println(snappolicy.config().dir)
+// ```
+pub fn config() -> SnapConfig []
+    todo("snapshot-nv.snappolicy.config")
+
+// The configuration with a different update mode.
+//
+// ```novo
+// use snappolicy
+//
+// fn main() [io]
+//     let c = snappolicy.with_update(snappolicy.config(), SnapNever)
+//     println(snappolicy.update_name(c.update))
+// ```
+pub fn with_update(c: SnapConfig, u: SnapUpdate) -> SnapConfig []
+    todo("snapshot-nv.snappolicy.with_update")
+
+// The configuration with a different snapshot directory.
+//
+// ```novo
+// use snappolicy
+//
+// fn main() [io]
+//     println(snappolicy.with_dir(snappolicy.config(), "__snapshots__").dir)
+// ```
+pub fn with_dir(c: SnapConfig, dir: Str) -> SnapConfig []
+    todo("snapshot-nv.snappolicy.with_dir")
+
+// The configuration with a different diff ceiling.
+//
+// ```novo
+// use snappolicy
+//
+// fn main() [io]
+//     println("${snappolicy.with_max_diff_lines(snappolicy.config(), 40).max_diff_lines}")
+// ```
+pub fn with_max_diff_lines(c: SnapConfig, lines: Int) -> SnapConfig []
+    todo("snapshot-nv.snappolicy.with_max_diff_lines")
+
+// The configuration with the unused-snapshot check turned on.
+//
+// ```novo
+// use snappolicy
+//
+// fn main() [io]
+//     let c = snappolicy.with_require_all_used(snappolicy.config(), true)
+//     println("${c.require_all_used}")
+// ```
+pub fn with_require_all_used(c: SnapConfig, required: Bool) -> SnapConfig []
+    todo("snapshot-nv.snappolicy.with_require_all_used")
+
+// The update mode this environment asks for.
+//
+// THE ONLY `[io]` FUNCTION IN THE POLICY MODULE, and the only place
+// this package reads the environment at all.  A runner calls it once
+// and puts the answer in a `SnapConfig`; an assertion never calls it.
+//
+// An unset or unrecognised variable answers the default rather than
+// refusing, because a typo in an environment variable must not be able
+// to turn a whole suite into a recording.  `policy_named` is the
+// parsing half, `[]`, for a caller that would rather see the refusal.
+//
+// ```novo
+// use snappolicy
+//
+// fn main() [io]
+//     println(snappolicy.update_name(snappolicy.policy_from_env()))
+// ```
+pub fn policy_from_env() -> SnapUpdate [io]
+    todo("snapshot-nv.snappolicy.policy_from_env")
+
+// The mode a name stands for: `never`, `new`, `auto`, `always`.
+//
+// `None` for anything else, which is what lets a command-line flag
+// refuse a typo that the environment reader tolerates.
+//
+// ```novo
+// use snappolicy
+//
+// fn main() [io]
+//     match snappolicy.policy_named("alwayss")
+//         Some(_) => println("recognised")
+//         None    => println("not a mode")
+// ```
+pub fn policy_named(name: Str) -> ?SnapUpdate []
+    todo("snapshot-nv.snappolicy.policy_named")
+
+// The name of a mode, the inverse of `policy_named`.
+//
+// ```novo
+// use snappolicy
+//
+// fn main() [io]
+//     println(snappolicy.update_name(SnapAuto))
+// ```
+pub fn update_name(u: SnapUpdate) -> Str []
+    todo("snapshot-nv.snappolicy.update_name")
+
+// The environment variable this package reads: `UPDATE_SNAPSHOTS`.
+//
+// Published because the name belongs in a project's documentation and
+// in a runner's help text, and a name spelled twice is a name that
+// will be spelled differently once.
+//
+// ```novo
+// use snappolicy
+//
+// fn main() [io]
+//     println(snappolicy.env_name())
+// ```
+pub fn env_name() -> Str []
+    todo("snapshot-nv.snappolicy.env_name")
+
+// Whether this mode replaces a stored snapshot that differs.
+//
+// True for `SnapAlways` alone.  A predicate rather than a match at
+// every call site, so the one dangerous mode is named in one place.
+//
+// ```novo
+// use snappolicy
+//
+// fn main() [io]
+//     println("${snappolicy.overwrites(SnapNew)}")
+// ```
+pub fn overwrites(u: SnapUpdate) -> Bool []
+    todo("snapshot-nv.snappolicy.overwrites")
+
+// Whether this mode writes the snapshot when there is none.
+//
+// True for `SnapAuto` and `SnapAlways`.
+//
+// ```novo
+// use snappolicy
+//
+// fn main() [io]
+//     println("${snappolicy.records_when_missing(SnapAuto)}")
+// ```
+pub fn records_when_missing(u: SnapUpdate) -> Bool []
+    todo("snapshot-nv.snappolicy.records_when_missing")
+
+// Whether this mode leaves a `.new` file beside a snapshot that
+// differs.
+//
+// True for everything but `SnapNever` and `SnapAlways` — the first
+// writes nothing and the second has already written the snapshot
+// itself.
+//
+// ```novo
+// use snappolicy
+//
+// fn main() [io]
+//     println("${snappolicy.leaves_rejected(SnapNew)}")
+// ```
+pub fn leaves_rejected(u: SnapUpdate) -> Bool []
+    todo("snapshot-nv.snappolicy.leaves_rejected")

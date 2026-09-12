@@ -1,0 +1,121 @@
+// snappolicy_tests.nv — the four modes, and which way each one errs.
+//
+// RED ON PURPOSE: every body under `src/` is a `todo()`, so every
+// assertion here reaches `not implemented: snapshot-nv.<module>.<fn>`.
+// That is the expected result until the bodies land.
+//
+// THE ASSERTIONS THAT MATTER ARE THE DEFAULTS.  A snapshot library
+// whose default silently rewrote the file it was comparing against
+// would make every test pass, which is the one failure mode that is
+// not visible from outside the suite.  So the first test here pins the
+// default mode and the three predicates that decide what each mode
+// writes — and none of them needs a filesystem or an environment.
+
+use std.test
+use snappolicy
+
+@test
+fn test_the_default_never_overwrites_a_stored_snapshot() [io]
+    let c = snappolicy.config()
+
+    test.case("the default mode is SnapNew")
+    test.assert(snappolicy.update_name(c.update) == "new")
+
+    test.case("which does not overwrite")
+    test.assert(snappolicy.overwrites(c.update) == false)
+
+    test.case("does not record a missing snapshot")
+    test.assert(snappolicy.records_when_missing(c.update) == false)
+
+    test.case("and does leave the evidence beside it")
+    test.assert(snappolicy.leaves_rejected(c.update))
+
+@test
+fn test_each_mode_writes_exactly_what_its_name_says() [io]
+    test.case("never writes nothing at all")
+    test.assert(snappolicy.overwrites(SnapNever) == false)
+    test.assert(snappolicy.records_when_missing(SnapNever) == false)
+    test.assert(snappolicy.leaves_rejected(SnapNever) == false)
+
+    test.case("auto records a missing snapshot and rejects a changed one")
+    test.assert(snappolicy.records_when_missing(SnapAuto))
+    test.assert(snappolicy.overwrites(SnapAuto) == false)
+    test.assert(snappolicy.leaves_rejected(SnapAuto))
+
+    test.case("always overwrites, and then has nothing to reject")
+    test.assert(snappolicy.overwrites(SnapAlways))
+    test.assert(snappolicy.records_when_missing(SnapAlways))
+    test.assert(snappolicy.leaves_rejected(SnapAlways) == false)
+
+@test
+fn test_the_configuration_defaults_are_the_conventions_a_reader_knows() [io]
+    let c = snappolicy.config()
+
+    test.case("snapshots live in snapshots/")
+    test.assert(c.dir == "snapshots")
+
+    test.case("a stored snapshot ends .snap")
+    test.assert(c.suffix == ".snap")
+
+    test.case("a rejected one ends .snap.new")
+    test.assert(c.new_suffix == ".snap.new")
+
+    test.case("the diff is cut, so one failure cannot bury the run")
+    test.assert(c.max_diff_lines > 0)
+
+    test.case("and the unused check is off, because only a runner can do it")
+    test.assert(c.require_all_used == false)
+
+@test
+fn test_a_configuration_is_built_one_field_at_a_time() [io]
+    let base = snappolicy.config()
+
+    test.case("with_update changes the mode and nothing else")
+    let u = snappolicy.with_update(base, SnapNever)
+    test.assert(snappolicy.update_name(u.update) == "never")
+    test.assert(u.dir == base.dir)
+
+    test.case("with_dir changes the directory")
+    test.assert(snappolicy.with_dir(base, "__snapshots__").dir == "__snapshots__")
+
+    test.case("with_max_diff_lines changes the ceiling")
+    test.assert(snappolicy.with_max_diff_lines(base, 40).max_diff_lines == 40)
+
+    test.case("with_require_all_used turns the runner's check on")
+    test.assert(snappolicy.with_require_all_used(base, true).require_all_used)
+
+@test
+fn test_a_mode_name_round_trips() [io]
+    test.case("never")
+    match snappolicy.policy_named("never")
+        None    => test.assert(false)
+        Some(u) => test.assert(snappolicy.update_name(u) == "never")
+
+    test.case("auto")
+    match snappolicy.policy_named("auto")
+        None    => test.assert(false)
+        Some(u) => test.assert(snappolicy.update_name(u) == "auto")
+
+    test.case("always")
+    match snappolicy.policy_named("always")
+        None    => test.assert(false)
+        Some(u) => test.assert(snappolicy.update_name(u) == "always")
+
+@test
+fn test_a_typo_is_refused_by_the_parser_and_tolerated_by_the_environment() [io, fs]
+    // The split that matters: a command-line flag should refuse
+    // `alwayss`, and an environment variable must not be able to turn a
+    // whole suite into a recording because somebody mistyped it in a
+    // shell profile.
+    test.case("the parser refuses what it does not know")
+    match snappolicy.policy_named("alwayss")
+        Some(_) => test.assert(false)
+        None    => test.assert(true)
+
+    test.case("and the environment reader answers a mode whatever it finds")
+    test.assert(snappolicy.update_name(snappolicy.policy_from_env()) != "")
+
+@test
+fn test_the_environment_variable_has_one_published_spelling() [io]
+    test.case("UPDATE_SNAPSHOTS")
+    test.assert(snappolicy.env_name() == "UPDATE_SNAPSHOTS")

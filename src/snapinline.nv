@@ -1,0 +1,312 @@
+// snapinline.nv — the snapshot that lives in the test, and why it is
+// two steps here.
+//
+// Every body here is a `todo()`; the signatures are the design.
+//
+// AN INLINE SNAPSHOT IS THE EXPECTED VALUE WRITTEN IN THE TEST, and the
+// reason people like it is that the test and its expectation are read
+// together. insta writes one with a procedural macro: on a mismatch,
+// the macro knows the call's source span and the tool rewrites the
+// literal in place.
+//
+// NOVO-LANG HAS NO MACRO THAT CAN SEE ITS CALL SITE, so a package
+// cannot rewrite the source it was called from — and it should not
+// want to. What it can do is record what the value WOULD have been,
+// with the line it belongs on, in a pending file beside the test; a
+// tool with an editor's rights then applies it. That is the split here:
+// this package decides and records, `novo test --review` edits.
+//
+// So the interface is deliberately honest about the two steps rather
+// than pretending to one. `check_inline` answers the same `SnapVerdict`
+// every other check answers, and `record_pending` appends the edit.
+// Nothing here writes a `.nv` file.
+//
+// THE INDENTATION IS THE ONE THING THAT HAS TO BE NORMALISED, and it is
+// the reason a naive inline snapshot is unusable. The literal in the
+// test is indented to the code around it; the value is not. So both
+// sides go through `normalise_inline`, which strips the common leading
+// whitespace of every non-empty line and the first newline after the
+// opening delimiter — exactly the rule insta uses, and stated here as
+// a function so a caller can see what their literal became.
+//
+// A PENDING FILE IS TEXT AND IS NOT COMMITTED. It sits beside the test
+// source with a `.pending-snap` extension, one record per edit, and a
+// run that matches removes it. A repository's ignore rules name it, so
+// `pending_suffix` is published.
+
+use snappolicy
+use snapfile
+use snapassert
+
+// The expectation as it was written in the test.
+pub struct SnapInline
+    // The test source file.
+    source: Str
+    // The line the literal starts on, one-based, so a tool can find it
+    // without re-parsing the file.  The caller writes it; `std.test`
+    // cannot tell a test its own position, which is the same gap
+    // `snapassert`'s module comment names.
+    line: Int
+    // The literal, exactly as written — indentation included.
+    // `normalise_inline` is what turns it into the value to compare.
+    expected: Str
+
+// One edit a review tool would apply.
+pub struct SnapPendingEdit
+    line: Int
+    // What the test says today, normalised.
+    expected: Str
+    // What the run produced, normalised and redacted.
+    actual: Str
+    // The indentation the literal sat at, so the tool can re-indent
+    // `actual` to match rather than leaving a block flush against the
+    // margin.
+    indent: Int
+
+// An inline expectation.
+//
+// ```novo
+// use snapinline
+//
+// fn main() [io]
+//     let i = snapinline.inline("tests/render_tests.nv", 42, "hello")
+//     println("${i.line}")
+// ```
+pub fn inline(source: Str, line: Int, expected: Str) -> SnapInline []
+    todo("snapshot-nv.snapinline.inline")
+
+// The literal, turned into the value to compare.
+//
+// Strips the newline that follows the opening delimiter, then the
+// longest leading whitespace common to every non-empty line, then a
+// trailing line that is only whitespace. A literal with no newline in
+// it comes back unchanged.
+//
+// `[]` and published, because "why did my inline snapshot not match"
+// is almost always this function's answer, and a caller who can call it
+// can see.
+//
+// ```novo
+// use snapinline
+//
+// fn main() [io]
+//     println(snapinline.normalise_inline("\n    a\n    b\n"))
+// ```
+pub fn normalise_inline(literal: Str) -> Str []
+    todo("snapshot-nv.snapinline.normalise_inline")
+
+// The common indentation of a literal, in columns.
+//
+// The number `record_pending` stores so a tool can re-indent what it
+// writes back.
+//
+// ```novo
+// use snapinline
+//
+// fn main() [io]
+//     let n = snapinline.indent_of("\n    a\n    b\n")
+//     println("${n}")
+// ```
+pub fn indent_of(literal: Str) -> Int []
+    todo("snapshot-nv.snapinline.indent_of")
+
+// The literal a tool would write for this value at this indentation.
+//
+// The inverse of `normalise_inline`, and the function that makes the
+// round trip checkable: normalise what it produces and the value comes
+// back.
+//
+// ```novo
+// use snapinline
+//
+// fn main() [io]
+//     println(snapinline.render_literal("a\nb\n", 4))
+// ```
+pub fn render_literal(value: Str, indent: Int) -> Str []
+    todo("snapshot-nv.snapinline.render_literal")
+
+// Compare a value with an inline expectation, and answer.
+//
+// The same `SnapVerdict` as `snapassert.check`, so a runner handles
+// both kinds of snapshot with one match. `SnapDiffered` carries the
+// pending file's path where a stored check carries the `.new` path.
+//
+// `[fs]` because a mismatch appends to the pending file; a match reads
+// nothing and writes nothing, which is why an unchanged suite of inline
+// snapshots touches no disk at all.
+//
+// ```novo
+// use snapassert
+// use snapinline
+//
+// fn main() [io, fs]
+//     let r = snapassert.request("tests/render_tests.nv", "greeting")
+//     let i = snapinline.inline("tests/render_tests.nv", 42, "hello")
+//     println(snapassert.verdict_name(snapinline.check_inline(r, i, "hello")))
+// ```
+pub fn check_inline(r: snapassert.SnapRequest, i: SnapInline,
+                    value: Str) -> snapassert.SnapVerdict [fs]
+    todo("snapshot-nv.snapinline.check_inline")
+
+// Compare an inline expectation with a value, with no file anywhere.
+//
+// `[]`, and what a test of this module asserts against: normalise both
+// sides, apply the request's redactions to the actual one, compare.
+//
+// ```novo
+// use snapassert
+// use snapinline
+//
+// fn main() [io]
+//     let r = snapassert.request("t.nv", "greeting")
+//     let i = snapinline.inline("t.nv", 1, "hello")
+//     let same = snapinline.agrees_inline(r, i, "hello")
+//     println("${same}")
+// ```
+pub fn agrees_inline(r: snapassert.SnapRequest, i: SnapInline, value: Str) -> Bool []
+    todo("snapshot-nv.snapinline.agrees_inline")
+
+// Report an inline mismatch through `std.test`.
+//
+// The inline sibling of `snapassert.assert_snapshot`, and the only
+// `[io]` function here.
+//
+// ```novo
+// use snapassert
+// use snapinline
+//
+// fn main() [io, fs]
+//     let r = snapassert.request("tests/render_tests.nv", "greeting")
+//     let i = snapinline.inline("tests/render_tests.nv", 42, "hello")
+//     snapinline.assert_inline(r, i, "hello")
+// ```
+pub fn assert_inline(r: snapassert.SnapRequest, i: SnapInline, value: Str) [fs, io]
+    todo("snapshot-nv.snapinline.assert_inline")
+
+// What a pending file is called: `.pending-snap`.
+//
+// Published because a repository's ignore rules name it, and because a
+// review tool looks for it.
+//
+// ```novo
+// use snapinline
+//
+// fn main() [io]
+//     println(snapinline.pending_suffix())
+// ```
+pub fn pending_suffix() -> Str []
+    todo("snapshot-nv.snapinline.pending_suffix")
+
+// The pending file beside a test source.
+//
+// ```novo
+// use snappolicy
+// use snapinline
+//
+// fn main() [io]
+//     println(snapinline.pending_path(snappolicy.config(), "tests/render_tests.nv"))
+// ```
+pub fn pending_path(c: snappolicy.SnapConfig, source: Str) -> Str []
+    todo("snapshot-nv.snapinline.pending_path")
+
+// Append an edit to the pending file, creating it if it is absent.
+//
+// Append rather than replace: one run produces several mismatches in
+// one file, and a writer that replaced would keep only the last.
+//
+// ```novo
+// use snappolicy
+// use snapinline
+//
+// fn main() [io, fs]
+//     let e = SnapPendingEdit { line: 42, expected: "hello", actual: "hallo", indent: 4 }
+//     match snapinline.record_pending(snappolicy.config(), "tests/render_tests.nv", e)
+//         Some(err) => println(err.message())
+//         None      => println("recorded")
+// ```
+pub fn record_pending(c: snappolicy.SnapConfig, source: Str,
+                      e: SnapPendingEdit) -> ?snapfile.SnapError [fs]
+    todo("snapshot-nv.snapinline.record_pending")
+
+// Every pending edit for a test source, in line order.
+//
+// In LINE order, and descending, because a tool applying them rewrites
+// the file from the bottom up — an edit that changed a literal's length
+// would move every line number below it.
+//
+// ```novo
+// use snappolicy
+// use snapinline
+// use std.list
+//
+// fn main() [io, fs]
+//     match snapinline.pending_edits(snappolicy.config(), "tests/render_tests.nv")
+//         Ok(es) => println("${list.len(es)}")
+//         Err(e) => println(e.message())
+// ```
+pub fn pending_edits(c: snappolicy.SnapConfig,
+                     source: Str) -> Result<[SnapPendingEdit], snapfile.SnapError> [fs]
+    todo("snapshot-nv.snapinline.pending_edits")
+
+// Remove the pending file for a test source.
+//
+// What a run in which everything matched has to do, for the same reason
+// `snapfile.clear_rejected` exists: a stale pending file makes a review
+// tool offer a change nobody made.
+//
+// ```novo
+// use snappolicy
+// use snapinline
+//
+// fn main() [io, fs]
+//     match snapinline.clear_pending(snappolicy.config(), "tests/render_tests.nv")
+//         Some(e) => println(e.message())
+//         None    => println("cleared")
+// ```
+pub fn clear_pending(c: snappolicy.SnapConfig, source: Str) -> ?snapfile.SnapError [fs]
+    todo("snapshot-nv.snapinline.clear_pending")
+
+// The pending file's text, from a list of edits.
+//
+// `[]`, and the format is the same shape as a snapshot file: a header
+// line, then one record per edit with its own delimiters, so a person
+// who opens one can read it.
+//
+// ```novo
+// use snapinline
+//
+// fn main() [io]
+//     println(snapinline.render_pending([]))
+// ```
+pub fn render_pending(es: [SnapPendingEdit]) -> Str []
+    todo("snapshot-nv.snapinline.render_pending")
+
+// The inverse of `render_pending`.
+//
+// ```novo
+// use snapinline
+//
+// fn main() [io]
+//     match snapinline.parse_pending("not a pending file")
+//         Ok(_)  => println("parsed")
+//         Err(e) => println(e.message())
+// ```
+pub fn parse_pending(text: Str) -> Result<[SnapPendingEdit], snapfile.SnapError> []
+    todo("snapshot-nv.snapinline.parse_pending")
+
+// Every test source under a directory that has a pending file.
+//
+// The inline half of what `novo test --review` walks; the stored half
+// is `snapfile.rejected_under`.
+//
+// ```novo
+// use snappolicy
+// use snapinline
+// use std.list
+//
+// fn main() [io, fs]
+//     let found = snapinline.pending_under(snappolicy.config(), "tests")
+//     println("${list.len(found)}")
+// ```
+pub fn pending_under(c: snappolicy.SnapConfig, dir: Str) -> [Str] [fs]
+    todo("snapshot-nv.snapinline.pending_under")

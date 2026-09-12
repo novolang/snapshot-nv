@@ -1,0 +1,422 @@
+// snapfile.nv — what is on disk, and the rule that makes it readable.
+//
+// Every body here is a `todo()`; the signatures are the design.
+//
+// THE FILE IS A HEADER AND THEN THE VALUE, VERBATIM.
+//
+//     --- snapshot-nv 1
+//     source: tests/render_tests.nv
+//     assertion: renders_a_wide_table
+//     expression: tblrender.render(t, style)
+//     redactions: timestamps, uuids
+//     ---
+//     ┌────────┬───────┐
+//     │ name   │ cells │
+//     └────────┴───────┘
+//
+// TWO DELIMITERS AND NOT ONE.  The value runs from the byte after the
+// second `---` line to the end of the file, unparsed and unescaped.
+// So a snapshot whose value CONTAINS `---`, or `key: value` lines, or
+// a YAML document, or nothing at all, round-trips — which a
+// single-delimiter format cannot promise and which matters here because
+// the values people snapshot are exactly the things that look like
+// other formats: rendered tables, generated YAML, patch files.
+//
+// A snapshot is READ BY PEOPLE, in a code review, next to the change
+// that altered it.  That is the whole reason the format is text with
+// the value in the clear rather than anything encoded: the diff in the
+// review IS the diff of the thing under test.  Every decision here
+// follows from it — no escaping, no quoting, no length prefix, and the
+// trailing newline preserved exactly, because "the output grew a blank
+// line" is a real regression and a format that normalised it away
+// would hide it.
+//
+// THE HEADER IS METADATA AND NEVER PART OF THE COMPARISON.  Changing
+// the expression text, or adding a redaction label, does not make a
+// snapshot differ; only the value does.  `parse` and `render` are `[]`
+// so the format is testable from a string, and the `[fs]` functions
+// below are thin.
+
+use snappolicy
+
+// What a stored snapshot records about itself.
+//
+// Everything here is for a person reading the file in a review. None of
+// it takes part in the comparison.
+pub struct SnapHeader
+    // The format version: `1`.  A file whose version is higher than
+    // this build understands is refused by name rather than parsed
+    // optimistically, because a snapshot silently misread is a test
+    // that passes for the wrong reason.
+    version: Int
+    // The test source file this snapshot belongs to, as the caller
+    // spelled it.
+    source: Str
+    // The assertion's name — one snapshot per name per source file.
+    assertion: Str
+    // The expression the value came from, as text, for the reader of
+    // the file.  The caller writes it; nothing derives it, because a
+    // package cannot see its caller's source.
+    expression: Str
+    // The labels of the redactions that were applied before the value
+    // was stored, so a reader can tell a real `[timestamp]` in the
+    // output from a redacted one.
+    redactions: [Str]
+
+// A stored snapshot: its header and its value.
+pub struct SnapStored
+    header: SnapHeader
+    // Exactly the bytes after the second delimiter line, including the
+    // final newline if the value has one.
+    value: Str
+
+// Everything that can go wrong with a snapshot file.
+pub enum SnapError
+    // There is no stored snapshot at this path.  Not always a failure:
+    // what it means is the update policy's decision.
+    SnapMissing(path: Str)
+    SnapUnreadable(path: Str)
+    SnapUnwritable(path: Str)
+    // The header does not parse, at this line.  The line number is
+    // one-based and counts from the start of the file, so it is the
+    // line an editor jumps to.
+    SnapBadHeader(path: Str, line: Int)
+    // The file's format version is newer than this build.  The version
+    // is carried so the message can say what would read it.
+    SnapVersionAhead(path: Str, version: Int)
+    // The assertion name cannot be a filename: it is empty, or it
+    // carries a path separator.
+    SnapBadName(name: Str)
+    // A `.new` file was accepted over a snapshot that has since
+    // changed underneath it.  A review tool's one real hazard, named
+    // rather than resolved silently.
+    SnapStale(path: Str)
+
+// The sentence a `Result<_, SnapError>` carries.
+//
+// SPEC § 3.4 admits a type as a `Result`'s error type only when it
+// implements `Error`, so this impl is what lets the functions here
+// answer their own refusal instead of a `Result<_, Str>` that has
+// thrown the variant away.
+//
+// Every message names the path, and `SnapBadHeader`'s names the line,
+// because the reader's next action is to open the file there.
+//
+// ```novo
+// use snapfile
+//
+// fn main() [io, fs]
+//     match snapfile.read("tests/snapshots/nothing.snap")
+//         Ok(_)  => println("read")
+//         Err(e) => println(e.message())
+// ```
+impl Error for SnapError
+    // Panics with `not implemented` until the bodies land.
+    fn message(self) -> Str
+        todo("snapshot-nv.snapfile.SnapError.message")
+
+// The format version this build writes: `1`.
+//
+// ```novo
+// use snapfile
+//
+// fn main() [io]
+//     println("${snapfile.format_version()}")
+// ```
+pub fn format_version() -> Int []
+    todo("snapshot-nv.snapfile.format_version")
+
+// A header for a snapshot, with no expression and no redactions.
+//
+// ```novo
+// use snapfile
+//
+// fn main() [io]
+//     println(snapfile.header("tests/render_tests.nv", "a_wide_table").assertion)
+// ```
+pub fn header(source: Str, assertion: Str) -> SnapHeader []
+    todo("snapshot-nv.snapfile.header")
+
+// The header with the expression text a reader sees.
+//
+// ```novo
+// use snapfile
+//
+// fn main() [io]
+//     let h = snapfile.header("tests/render_tests.nv", "a_wide_table")
+//     println(snapfile.with_expression(h, "render(t)").expression)
+// ```
+pub fn with_expression(h: SnapHeader, expression: Str) -> SnapHeader []
+    todo("snapshot-nv.snapfile.with_expression")
+
+// The header with the redaction labels recorded.
+//
+// ```novo
+// use snapfile
+// use std.list
+//
+// fn main() [io]
+//     let h = snapfile.header("tests/render_tests.nv", "a_wide_table")
+//     println("${list.len(snapfile.with_redactions(h, ["timestamps"]).redactions)}")
+// ```
+pub fn with_redactions(h: SnapHeader, labels: [Str]) -> SnapHeader []
+    todo("snapshot-nv.snapfile.with_redactions")
+
+// The whole file as text: the header, the delimiter, the value.
+//
+// ```novo
+// use snapfile
+//
+// fn main() [io]
+//     let s = SnapStored { header: snapfile.header("t.nv", "a"), value: "hello\n" }
+//     println(snapfile.render(s))
+// ```
+pub fn render(s: SnapStored) -> Str []
+    todo("snapshot-nv.snapfile.render")
+
+// The same bytes, appended to a caller's buffer.
+//
+// For a runner writing many snapshots without a `Str` per file.
+//
+// ```novo
+// use snapfile
+// use std.list
+//
+// fn main() [io]
+//     let s = SnapStored { header: snapfile.header("t.nv", "a"), value: "hello\n" }
+//     println("${list.len(snapfile.render_into([], s))}")
+// ```
+pub fn render_into(out: [u8], s: SnapStored) -> [u8] []
+    todo("snapshot-nv.snapfile.render_into")
+
+// The inverse of `render`, from the file's text.
+//
+// `[]`, and the reason the format is testable without a filesystem:
+// every round-trip case in this package's suite is a string in and a
+// string out.
+//
+// ```novo
+// use snapfile
+//
+// fn main() [io]
+//     match snapfile.parse("not a snapshot")
+//         Ok(_)  => println("parsed")
+//         Err(e) => println(e.message())
+// ```
+pub fn parse(text: Str) -> Result<SnapStored, SnapError> []
+    todo("snapshot-nv.snapfile.parse")
+
+// Where the snapshot for this assertion lives.
+//
+// `<directory of source>/<config.dir>/<stem of source>__<assertion><config.suffix>`
+// — the double underscore is insta's, and it is what lets one glob
+// find every snapshot belonging to one test file.
+//
+// `SnapBadName` when the assertion name carries a path separator or is
+// empty: an assertion name becomes a filename, so it is the one piece
+// of caller text that has to be checked.
+//
+// ```novo
+// use snappolicy
+// use snapfile
+//
+// fn main() [io]
+//     match snapfile.snapshot_path(snappolicy.config(), "tests/render_tests.nv", "a_wide_table")
+//         Ok(p)  => println(p)
+//         Err(e) => println(e.message())
+// ```
+pub fn snapshot_path(c: snappolicy.SnapConfig, source: Str,
+                     assertion: Str) -> Result<Str, SnapError> []
+    todo("snapshot-nv.snapfile.snapshot_path")
+
+// The `.new` path beside a snapshot path.
+//
+// ```novo
+// use snappolicy
+// use snapfile
+//
+// fn main() [io]
+//     println(snapfile.new_path(snappolicy.config(), "tests/snapshots/t__a.snap"))
+// ```
+pub fn new_path(c: snappolicy.SnapConfig, path: Str) -> Str []
+    todo("snapshot-nv.snapfile.new_path")
+
+// Whether a path is a rejected snapshot rather than a stored one.
+//
+// The predicate a repository's ignore rules and a review tool both
+// need, and the reason `new_suffix` is a field rather than a derived
+// string.
+//
+// ```novo
+// use snappolicy
+// use snapfile
+//
+// fn main() [io]
+//     let rejected = snapfile.is_rejected(snappolicy.config(), "tests/snapshots/t__a.snap.new")
+//     println("${rejected}")
+// ```
+pub fn is_rejected(c: snappolicy.SnapConfig, path: Str) -> Bool []
+    todo("snapshot-nv.snapfile.is_rejected")
+
+// Read and parse the snapshot at a path.
+//
+// `SnapMissing` when there is no file, which is a different answer from
+// `SnapUnreadable` because the update policy acts on the first and
+// never on the second.
+//
+// ```novo
+// use snapfile
+//
+// fn main() [io, fs]
+//     match snapfile.read("tests/snapshots/t__a.snap")
+//         Ok(s)  => println(s.header.assertion)
+//         Err(e) => println(e.message())
+// ```
+pub fn read(path: Str) -> Result<SnapStored, SnapError> [fs]
+    todo("snapshot-nv.snapfile.read")
+
+// Write a snapshot to a path, creating the directory if it is absent.
+//
+// ```novo
+// use snapfile
+//
+// fn main() [io, fs]
+//     let s = SnapStored { header: snapfile.header("t.nv", "a"), value: "hello\n" }
+//     match snapfile.write("tests/snapshots/t__a.snap", s)
+//         Some(e) => println(e.message())
+//         None    => println("written")
+// ```
+pub fn write(path: Str, s: SnapStored) -> ?SnapError [fs]
+    todo("snapshot-nv.snapfile.write")
+
+// Write the rejected value beside the stored snapshot, and answer where
+// it landed.
+//
+// ```novo
+// use snappolicy
+// use snapfile
+//
+// fn main() [io, fs]
+//     let s = SnapStored { header: snapfile.header("t.nv", "a"), value: "hello\n" }
+//     match snapfile.write_rejected(snappolicy.config(), "tests/snapshots/t__a.snap", s)
+//         Ok(p)  => println(p)
+//         Err(e) => println(e.message())
+// ```
+pub fn write_rejected(c: snappolicy.SnapConfig, path: Str,
+                      s: SnapStored) -> Result<Str, SnapError> [fs]
+    todo("snapshot-nv.snapfile.write_rejected")
+
+// Remove the `.new` file beside a snapshot, if there is one.
+//
+// What a run that now matches has to do, and the step every hand-rolled
+// snapshot helper forgets: a stale `.new` beside a passing snapshot
+// makes a review tool offer a change nobody made.
+//
+// ```novo
+// use snappolicy
+// use snapfile
+//
+// fn main() [io, fs]
+//     match snapfile.clear_rejected(snappolicy.config(), "tests/snapshots/t__a.snap")
+//         Some(e) => println(e.message())
+//         None    => println("cleared")
+// ```
+pub fn clear_rejected(c: snappolicy.SnapConfig, path: Str) -> ?SnapError [fs]
+    todo("snapshot-nv.snapfile.clear_rejected")
+
+// Every rejected snapshot under a directory, in sorted order.
+//
+// The list a review flow works through.  Sorted, so two runs on two
+// machines present the same changes in the same order.
+//
+// ```novo
+// use snappolicy
+// use snapfile
+// use std.list
+//
+// fn main() [io, fs]
+//     println("${list.len(snapfile.rejected_under(snappolicy.config(), "tests"))}")
+// ```
+pub fn rejected_under(c: snappolicy.SnapConfig, dir: Str) -> [Str] [fs]
+    todo("snapshot-nv.snapfile.rejected_under")
+
+// Accept a rejected snapshot: move the `.new` file over the stored one.
+//
+// `SnapStale` when the stored snapshot changed after the `.new` was
+// written — the one real hazard of a review that runs after a rebase,
+// and the reason this is a function here rather than two lines in a
+// shell script.
+//
+// ```novo
+// use snappolicy
+// use snapfile
+//
+// fn main() [io, fs]
+//     match snapfile.accept_rejected(snappolicy.config(), "tests/snapshots/t__a.snap")
+//         Some(e) => println(e.message())
+//         None    => println("accepted")
+// ```
+pub fn accept_rejected(c: snappolicy.SnapConfig, path: Str) -> ?SnapError [fs]
+    todo("snapshot-nv.snapfile.accept_rejected")
+
+// Every stored snapshot under a directory that belongs to this source
+// file.
+//
+// The other half of the unused-snapshot check: a runner collects the
+// names its tests asked for and compares them with this.
+//
+// ```novo
+// use snappolicy
+// use snapfile
+// use std.list
+//
+// fn main() [io, fs]
+//     let c = snappolicy.config()
+//     println("${list.len(snapfile.stored_for(c, "tests/render_tests.nv"))}")
+// ```
+pub fn stored_for(c: snappolicy.SnapConfig, source: Str) -> [Str] [fs]
+    todo("snapshot-nv.snapfile.stored_for")
+
+// The stored names a run did not ask for.
+//
+// `[]`, because it is set arithmetic over two lists the caller already
+// has — which is what makes the unused check a runner's decision rather
+// than an assertion's.
+//
+// ```novo
+// use snapfile
+// use std.list
+//
+// fn main() [io]
+//     println("${list.len(snapfile.unused_names(["a", "b"], ["a"]))}")
+// ```
+pub fn unused_names(stored: [Str], used: [Str]) -> [Str] []
+    todo("snapshot-nv.snapfile.unused_names")
+
+// The value a stored snapshot holds.
+//
+// ```novo
+// use snapfile
+//
+// fn main() [io]
+//     let s = SnapStored { header: snapfile.header("t.nv", "a"), value: "hello\n" }
+//     println(snapfile.value_of(s))
+// ```
+pub fn value_of(s: SnapStored) -> Str []
+    todo("snapshot-nv.snapfile.value_of")
+
+// Whether an assertion name can become a filename.
+//
+// False for the empty name and for anything carrying a path separator.
+// Published so a runner can refuse a bad name where it is written
+// rather than at the first snapshot.
+//
+// ```novo
+// use snapfile
+//
+// fn main() [io]
+//     let ok = snapfile.name_ok("renders/a/table")
+//     println("${ok}")
+// ```
+pub fn name_ok(assertion: Str) -> Bool []
+    todo("snapshot-nv.snapfile.name_ok")

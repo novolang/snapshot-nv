@@ -1,0 +1,279 @@
+// snapredact.nv — the volatile fields, replaced before they are
+// stored.
+//
+// Every body here is a `todo()`; the signatures are the design.
+//
+// A SNAPSHOT OF ANYTHING REAL CONTAINS SOMETHING THAT CHANGES.  A
+// timestamp, a generated identifier, an absolute path with somebody's
+// home directory in it, a duration in milliseconds.  Left alone, the
+// snapshot fails on the second run and the suite gets deleted.
+//
+// THE REDACTION IS APPLIED BEFORE THE VALUE IS STORED, not when it is
+// compared.  Which means the file on disk already reads
+// `created: [timestamp]`, and three things follow:
+//
+//   1. The stored file is stable — a reader in a code review sees the
+//      redaction rather than a value that is about to change.
+//   2. The comparison is a plain string compare, with no rules of its
+//      own, so there is exactly one place a redaction can be wrong.
+//   3. A redaction ADDED to a test changes the stored file, which shows
+//      up in review as a change — where a compare-time rule would
+//      change what passes with no diff at all.
+//
+// A REDACTION IS A LABEL AND A NAMED FUNCTION.  The label goes in the
+// header so a reader can tell a real `[timestamp]` in some program's
+// output from one this package put there.  The function is
+// `fn(Str) -> Str` in a struct field, which is matchers-nv's
+// arrangement and for the same reason: SPEC § 3.6's bounds carry an
+// effect argument and never a type one, so a combinator over values
+// cannot be written against a trait.
+//
+// The functions this module ships are named functions, not lambdas, so
+// that the ones a caller writes look like the ones here.  A `@value`
+// struct could not hold one of these fields at all, which is why
+// `SnapRedaction` is an ordinary struct.
+
+// One replacement applied to a snapshot value before it is stored.
+pub struct SnapRedaction
+    // What the header records.  Short, lower-case, and the same word
+    // the constructor is named after.
+    label: Str
+    // The replacement itself: the whole value in, the whole value out.
+    // Whole-value rather than per-match so that a redaction can be
+    // structural — dropping a trailing duration line, sorting a set —
+    // and not only textual.
+    apply: fn(Str) -> Str
+
+// The text a redaction leaves behind: `[redacted]`.
+//
+// One spelling, published, because two redactions that write different
+// placeholders make a snapshot's own diff unreadable.
+//
+// ```novo
+// use snapredact
+//
+// fn main() [io]
+//     println(snapredact.placeholder())
+// ```
+pub fn placeholder() -> Str []
+    todo("snapshot-nv.snapredact.placeholder")
+
+// A redaction from a label and a named function.
+//
+// The constructor a caller writes their own with.
+//
+// ```novo
+// use snapredact
+// use std.str
+//
+// fn drop_trailing_blank(value: Str) -> Str
+//     str.trim_end(value)
+//
+// fn main() [io]
+//     println(snapredact.redaction("trailing-blank", drop_trailing_blank).label)
+// ```
+pub fn redaction(label: Str, apply: fn(Str) -> Str) -> SnapRedaction []
+    todo("snapshot-nv.snapredact.redaction")
+
+// Every redaction applied, in order.
+//
+// In ORDER and not as a set: a path redaction that runs after a
+// timestamp one sees the text the first produced, and two orders give
+// two answers.  The list the caller wrote is the order that runs.
+//
+// ```novo
+// use snapredact
+//
+// fn main() [io]
+//     println(snapredact.apply_all([], "created: 2026-09-11T10:00:00Z\n"))
+// ```
+pub fn apply_all(rs: [SnapRedaction], value: Str) -> Str []
+    todo("snapshot-nv.snapredact.apply_all")
+
+// The labels of a list of redactions, for the header.
+//
+// ```novo
+// use snapredact
+// use std.list
+//
+// fn main() [io]
+//     println("${list.len(snapredact.labels([snapredact.timestamps()]))}")
+// ```
+pub fn labels(rs: [SnapRedaction]) -> [Str] []
+    todo("snapshot-nv.snapredact.labels")
+
+// Replace anything that looks like an RFC 3339 timestamp.
+//
+// Label `timestamps`.  RFC 3339 and not "any date": a redaction that
+// matched loosely would eat the dates a test is actually about, and a
+// snapshot that redacted its own subject passes forever.
+//
+// ```novo
+// use snapredact
+//
+// fn main() [io]
+//     println(snapredact.timestamps().label)
+// ```
+pub fn timestamps() -> SnapRedaction []
+    todo("snapshot-nv.snapredact.timestamps")
+
+// Replace anything that looks like a canonical UUID.
+//
+// Label `uuids`.  Eight-four-four-four-twelve lower-case hex with the
+// hyphens; a bare 32-character hex run is `hex_runs`, because the two
+// have different false-positive risks.
+//
+// ```novo
+// use snapredact
+//
+// fn main() [io]
+//     println(snapredact.uuids().label)
+// ```
+pub fn uuids() -> SnapRedaction []
+    todo("snapshot-nv.snapredact.uuids")
+
+// Replace hexadecimal runs of at least `min_len` characters.
+//
+// Label `hex`.  For hashes, content addresses and pointer values.  The
+// minimum is an argument because the right one depends on what is being
+// snapshotted: 40 for a git object, 16 for a pointer, and 8 would eat
+// half of a hex dump.
+//
+// ```novo
+// use snapredact
+//
+// fn main() [io]
+//     println(snapredact.hex_runs(40).label)
+// ```
+pub fn hex_runs(min_len: Int) -> SnapRedaction []
+    todo("snapshot-nv.snapredact.hex_runs")
+
+// Replace a prefix wherever it appears, with `[root]`.
+//
+// Label `paths`.  The redaction almost every snapshot of a tool's
+// output needs: a temporary directory, a checkout root, a home
+// directory.  A prefix rather than a pattern, because the caller knows
+// the exact string and a pattern would be a guess.
+//
+// ```novo
+// use snapredact
+//
+// fn main() [io]
+//     println(snapredact.path_prefix("/tmp/novo-a2f4k9").label)
+// ```
+pub fn path_prefix(prefix: Str) -> SnapRedaction []
+    todo("snapshot-nv.snapredact.path_prefix")
+
+// Replace the value after a `key:` on any line whose key matches.
+//
+// Label `field:<name>`.  For a rendered record or a YAML-shaped
+// output: `created: 2026-09-11` becomes `created: [redacted]`, and the
+// key stays so the shape of the output is still under test.
+//
+// ```novo
+// use snapredact
+//
+// fn main() [io]
+//     println(snapredact.field("created").label)
+// ```
+pub fn field(name: Str) -> SnapRedaction []
+    todo("snapshot-nv.snapredact.field")
+
+// Replace the value of a JSON member with the placeholder, wherever it
+// appears at any depth.
+//
+// Label `json:<name>`.  Parses the value as JSON and re-renders it, so
+// a member inside an array inside an object is reached and the output
+// is still JSON — which a line-based rule cannot promise.  A value that
+// is not JSON is left exactly as it was; a redaction is not the place
+// to discover that a test's output is malformed.
+//
+// ```novo
+// use snapredact
+//
+// fn main() [io]
+//     println(snapredact.json_member("id").label)
+// ```
+pub fn json_member(name: Str) -> SnapRedaction []
+    todo("snapshot-nv.snapredact.json_member")
+
+// Replace every match of a regular expression.
+//
+// Label `regex`.  The escape hatch, and last on purpose: the named
+// redactions above say what they are about in the header, and a header
+// line reading `regex` tells a reader nothing.  Reach for it when the
+// volatile thing is specific to one test.
+//
+// An invalid pattern makes a redaction that changes nothing rather than
+// one that raises, because a snapshot assertion is not where a person
+// should learn their pattern is wrong — `pattern_ok` is.
+//
+// ```novo
+// use snapredact
+//
+// fn main() [io]
+//     println(snapredact.matching("run [0-9]+").label)
+// ```
+pub fn matching(pattern: Str) -> SnapRedaction []
+    todo("snapshot-nv.snapredact.matching")
+
+// Whether a pattern compiles, so a caller can be told where they wrote
+// it.
+//
+// ```novo
+// use snapredact
+//
+// fn main() [io]
+//     let ok = snapredact.pattern_ok("run [0-9")
+//     println("${ok}")
+// ```
+pub fn pattern_ok(pattern: Str) -> Bool []
+    todo("snapshot-nv.snapredact.pattern_ok")
+
+// Normalise line endings to `\n` before anything else looks at the
+// value.
+//
+// Label `newlines`.  Not applied unless a caller asks: a test of
+// something that emits `\r\n` on purpose must be able to see it.  It is
+// here because the alternative — a snapshot library that normalised
+// silently — is how a Windows-only regression becomes invisible.
+//
+// ```novo
+// use snapredact
+//
+// fn main() [io]
+//     println(snapredact.unix_newlines().label)
+// ```
+pub fn unix_newlines() -> SnapRedaction []
+    todo("snapshot-nv.snapredact.unix_newlines")
+
+// Drop trailing spaces from every line.
+//
+// Label `trailing-space`.  For output whose line padding is not the
+// subject of the test, and which a person's editor will strip in the
+// review anyway — so the snapshot that survives review is this one.
+//
+// ```novo
+// use snapredact
+//
+// fn main() [io]
+//     println(snapredact.trailing_space().label)
+// ```
+pub fn trailing_space() -> SnapRedaction []
+    todo("snapshot-nv.snapredact.trailing_space")
+
+// The four redactions a tool's command-line output usually needs:
+// timestamps, uuids, 40-character hex runs and trailing space.
+//
+// A named list rather than an example in a README, because the list
+// somebody copies out of a README is the list that goes stale.
+//
+// ```novo
+// use snapredact
+// use std.list
+//
+// fn main() [io]
+//     println("${list.len(snapredact.cli_defaults())}")
+// ```
+pub fn cli_defaults() -> [SnapRedaction] []
+    todo("snapshot-nv.snapredact.cli_defaults")

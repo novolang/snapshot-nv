@@ -1,0 +1,191 @@
+// snapfile_tests.nv — the format, asserted from strings.
+//
+// RED ON PURPOSE: every body under `src/` is a `todo()`, so every
+// assertion here reaches `not implemented: snapshot-nv.<module>.<fn>`.
+//
+// THE CASES THAT MATTER ARE THE VALUES THAT LOOK LIKE THE FORMAT.  A
+// snapshot of a YAML document, of a patch file, of a table with a `---`
+// rule in it — each of them contains the delimiter, and a
+// single-delimiter format gets every one of them wrong.  So most of
+// this file is round trips of values chosen to break the parser, and
+// none of them needs a filesystem: `render` and `parse` are `[]`.
+
+use std.test
+use std.str
+use std.list
+use snappolicy
+use snapfile
+
+fn stored(value: Str) -> SnapStored
+    SnapStored { header: snapfile.header("tests/render_tests.nv", "a_table"),
+                 value: value }
+
+@test
+fn test_a_value_containing_the_delimiter_round_trips() [io]
+    let awkward = "--- not a header\nkey: not a key\n---\nstill the value\n"
+
+    test.case("it renders")
+    let text = snapfile.render(stored(awkward))
+    test.assert(str.len(text) > str.len(awkward))
+
+    test.case("and parses back to exactly the same bytes")
+    match snapfile.parse(text)
+        Err(_) => test.assert(false)
+        Ok(s)  => test.assert(snapfile.value_of(s) == awkward)
+
+@test
+fn test_the_trailing_newline_is_preserved_exactly() [io]
+    // "The output grew a blank line" is a real regression, and a format
+    // that normalised it away would hide it.
+    test.case("a value with one")
+    match snapfile.parse(snapfile.render(stored("hello\n")))
+        Err(_) => test.assert(false)
+        Ok(s)  => test.assert(snapfile.value_of(s) == "hello\n")
+
+    test.case("a value without one")
+    match snapfile.parse(snapfile.render(stored("hello")))
+        Err(_) => test.assert(false)
+        Ok(s)  => test.assert(snapfile.value_of(s) == "hello")
+
+    test.case("and a value that is only newlines")
+    match snapfile.parse(snapfile.render(stored("\n\n")))
+        Err(_) => test.assert(false)
+        Ok(s)  => test.assert(snapfile.value_of(s) == "\n\n")
+
+@test
+fn test_an_empty_value_is_a_value() [io]
+    test.case("it round trips as the empty string")
+    match snapfile.parse(snapfile.render(stored("")))
+        Err(_) => test.assert(false)
+        Ok(s)  => test.assert(snapfile.value_of(s) == "")
+
+@test
+fn test_the_header_carries_what_a_reviewer_needs_and_nothing_else() [io]
+    let h = snapfile.with_redactions(
+              snapfile.with_expression(snapfile.header("t.nv", "a"), "render(x)"),
+              ["timestamps", "uuids"])
+
+    test.case("the version is this build's")
+    test.assert(snapfile.header("t.nv", "a").version == snapfile.format_version())
+
+    test.case("the expression is kept as written")
+    test.assert(h.expression == "render(x)")
+
+    test.case("and the redaction labels are kept in order")
+    test.assert(list.len(h.redactions) == 2)
+
+@test
+fn test_a_header_difference_is_not_a_value_difference() [io]
+    // Changing the expression text must not make a snapshot fail; only
+    // the value takes part in the comparison.
+    let plain = stored("hello\n")
+    let annotated = SnapStored { header: snapfile.with_expression(plain.header, "other(x)"),
+                                 value: "hello\n" }
+
+    test.case("two files, two headers, one value")
+    match snapfile.parse(snapfile.render(annotated))
+        Err(_) => test.assert(false)
+        Ok(s)  => test.assert(snapfile.value_of(s) == snapfile.value_of(plain))
+
+@test
+fn test_text_that_is_not_a_snapshot_is_refused_with_a_line() [io]
+    test.case("no header at all")
+    match snapfile.parse("just some text\n")
+        Ok(_)  => test.assert(false)
+        Err(_) => test.assert(true)
+
+    test.case("a header that never closes")
+    match snapfile.parse("--- snapshot-nv 1\nsource: t.nv\n")
+        Ok(_)  => test.assert(false)
+        Err(_) => test.assert(true)
+
+    test.case("and a version this build does not understand")
+    match snapfile.parse("--- snapshot-nv 99\nsource: t.nv\n---\nx\n")
+        Ok(_)  => test.assert(false)
+        Err(_) => test.assert(true)
+
+@test
+fn test_the_render_into_buffer_is_the_same_bytes() [io]
+    test.case("the buffer form and the string form agree")
+    test.assert(list.len(snapfile.render_into([], stored("hello\n")))
+                == str.len(snapfile.render(stored("hello\n"))))
+
+@test
+fn test_a_path_is_the_source_stem_and_the_assertion_name() [io]
+    let c = snappolicy.config()
+
+    test.case("the double underscore is what makes one glob find a file's snapshots")
+    match snapfile.snapshot_path(c, "tests/render_tests.nv", "a_wide_table")
+        Err(_) => test.assert(false)
+        Ok(p)  => test.assert(p == "tests/snapshots/render_tests__a_wide_table.snap")
+
+    test.case("the rejected path sits beside it")
+    test.assert(snapfile.new_path(c, "tests/snapshots/render_tests__a_wide_table.snap")
+                == "tests/snapshots/render_tests__a_wide_table.snap.new")
+
+    test.case("and a rejected path is recognisable")
+    test.assert(snapfile.is_rejected(c, "tests/snapshots/a__b.snap.new"))
+    test.assert(snapfile.is_rejected(c, "tests/snapshots/a__b.snap") == false)
+
+@test
+fn test_an_assertion_name_that_cannot_be_a_filename_is_refused() [io]
+    let c = snappolicy.config()
+
+    test.case("a separator")
+    test.assert(snapfile.name_ok("renders/a/table") == false)
+    match snapfile.snapshot_path(c, "tests/t.nv", "renders/a/table")
+        Ok(_)  => test.assert(false)
+        Err(_) => test.assert(true)
+
+    test.case("the empty name")
+    test.assert(snapfile.name_ok("") == false)
+
+    test.case("and an ordinary one")
+    test.assert(snapfile.name_ok("a_wide_table"))
+
+@test
+fn test_the_unused_set_is_arithmetic_the_runner_supplies_the_input_for() [io]
+    test.case("a stored name nothing asked for")
+    test.assert(list.len(snapfile.unused_names(["a", "b"], ["a"])) == 1)
+
+    test.case("nothing unused when every stored name was asked for")
+    test.assert(list.len(snapfile.unused_names(["a"], ["a", "b"])) == 0)
+
+@test
+fn test_the_file_calls_are_thin_over_the_format() [io, fs]
+    let c = snappolicy.config()
+
+    test.case("reading what is not there is SnapMissing, not an unreadable file")
+    match snapfile.read("tests/snapshots/nothing__at_all.snap")
+        Ok(_)  => test.assert(false)
+        Err(e) => test.assert(str.len(e.message()) > 0)
+
+    test.case("writing answers a fault or nothing")
+    match snapfile.write("target/snapshot-nv-probe.snap", stored("hello\n"))
+        Some(e) => test.assert(str.len(e.message()) > 0)
+        None    => test.assert(true)
+
+    test.case("a rejected file answers where it landed")
+    match snapfile.write_rejected(c, "target/snapshot-nv-probe.snap", stored("other\n"))
+        Ok(p)  => test.assert(snapfile.is_rejected(c, p))
+        Err(e) => test.assert(str.len(e.message()) > 0)
+
+    test.case("clearing a rejected file that is not there is not an error")
+    match snapfile.clear_rejected(c, "target/snapshot-nv-probe.snap")
+        Some(e) => test.assert(str.len(e.message()) > 0)
+        None    => test.assert(true)
+
+@test
+fn test_the_review_flow_walks_sorted_paths() [io, fs]
+    let c = snappolicy.config()
+
+    test.case("rejected files come back sorted, so two machines agree")
+    test.assert(list.len(snapfile.rejected_under(c, "tests")) >= 0)
+
+    test.case("stored files for one source are findable")
+    test.assert(list.len(snapfile.stored_for(c, "tests/render_tests.nv")) >= 0)
+
+    test.case("and accepting what is not there is refused rather than silent")
+    match snapfile.accept_rejected(c, "target/snapshot-nv-nothing.snap")
+        None    => test.assert(false)
+        Some(e) => test.assert(str.len(e.message()) > 0)

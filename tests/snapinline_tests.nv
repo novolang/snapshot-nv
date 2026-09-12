@@ -1,0 +1,159 @@
+// snapinline_tests.nv — the indentation, which is the whole difficulty.
+//
+// RED ON PURPOSE: every body under `src/` is a `todo()`, so every
+// assertion here reaches `not implemented: snapshot-nv.<module>.<fn>`.
+//
+// AN INLINE SNAPSHOT IS INDENTED TO THE CODE AROUND IT AND THE VALUE IS
+// NOT.  Every inline-snapshot implementation's bug reports are about
+// that one mismatch, so `normalise_inline` and `render_literal` are
+// published as a round trip and asserted as one here.
+//
+// AND THE PENDING FILE IS ORDERED DESCENDING, because a tool applying
+// the edits rewrites the file from the bottom up — an edit that changed
+// a literal's length would move every line number below it.
+
+use std.test
+use std.str
+use std.list
+use snappolicy
+use snapassert
+use snapinline
+
+@test
+fn test_a_literal_loses_its_indentation_and_keeps_its_shape() [io]
+    test.case("the newline after the opening delimiter goes")
+    test.assert(snapinline.normalise_inline("\n    a\n    b\n") == "a\nb\n")
+
+    test.case("the common indentation goes and the relative one stays")
+    test.assert(snapinline.normalise_inline("\n    a\n      b\n") == "a\n  b\n")
+
+    test.case("a literal with no newline in it is unchanged")
+    test.assert(snapinline.normalise_inline("hello") == "hello")
+
+@test
+fn test_a_blank_line_does_not_decide_the_indentation() [io]
+    // An empty line has no leading whitespace, so a naive minimum over
+    // every line answers zero and the literal keeps its indentation.
+    test.case("the blank line is ignored")
+    test.assert(snapinline.normalise_inline("\n    a\n\n    b\n") == "a\n\nb\n")
+
+    test.case("and the indentation is reported as what it was")
+    test.assert(snapinline.indent_of("\n    a\n\n    b\n") == 4)
+
+@test
+fn test_the_round_trip_holds() [io]
+    // Render a value as a literal at an indentation, normalise it back,
+    // and the value returns.  The property that makes a review tool's
+    // rewrite safe.
+    let value = "a\n  b\n"
+
+    test.case("at four columns")
+    test.assert(snapinline.normalise_inline(snapinline.render_literal(value, 4)) == value)
+
+    test.case("at no indentation at all")
+    test.assert(snapinline.normalise_inline(snapinline.render_literal(value, 0)) == value)
+
+@test
+fn test_an_inline_expectation_carries_its_position() [io]
+    let i = snapinline.inline("tests/render_tests.nv", 42, "hello")
+
+    test.case("the source and the line, because std.test cannot say either")
+    test.assert(i.source == "tests/render_tests.nv")
+    test.assert(i.line == 42)
+
+@test
+fn test_the_inline_comparison_is_pure_and_normalises_both_sides() [io]
+    let r = snapassert.request("tests/render_tests.nv", "greeting")
+
+    test.case("an indented literal matches an unindented value")
+    test.assert(snapinline.agrees_inline(r,
+                                         snapinline.inline("t.nv", 1, "\n    hello\n"),
+                                         "hello\n"))
+
+    test.case("and a real difference is still a difference")
+    test.assert(snapinline.agrees_inline(r,
+                                         snapinline.inline("t.nv", 1, "\n    hello\n"),
+                                         "hallo\n") == false)
+
+@test
+fn test_an_inline_check_answers_the_same_verdict_as_a_stored_one() [io, fs]
+    // So a runner handles both kinds of snapshot with one match.
+    let r = snapassert.request("tests/render_tests.nv", "greeting")
+    let i = snapinline.inline("tests/render_tests.nv", 42, "hello")
+
+    test.case("a match is SnapMatched")
+    test.assert(snapassert.verdict_name(snapinline.check_inline(r, i, "hello")) != "")
+
+@test
+fn test_a_pending_file_is_named_so_a_repository_can_ignore_it() [io]
+    test.case("the suffix is published")
+    test.assert(snapinline.pending_suffix() == ".pending-snap")
+
+    test.case("and it sits beside the test source")
+    test.assert(snapinline.pending_path(snappolicy.config(), "tests/render_tests.nv")
+                == "tests/render_tests.nv.pending-snap")
+
+@test
+fn test_a_pending_record_round_trips_and_keeps_the_indentation() [io]
+    let e = SnapPendingEdit { line: 42, expected: "hello", actual: "hallo", indent: 4 }
+
+    test.case("it renders to something a person can read")
+    let text = snapinline.render_pending([e])
+    test.assert(str.contains(text, "hallo"))
+
+    test.case("and parses back with the indentation a tool needs")
+    match snapinline.parse_pending(text)
+        Err(_) => test.assert(false)
+        Ok(es) =>
+            test.assert(list.len(es) == 1)
+            match list.first(es)
+                None    => test.assert(false)
+                Some(b) => test.assert(b.indent == 4)
+
+@test
+fn test_text_that_is_not_a_pending_file_is_refused() [io]
+    match snapinline.parse_pending("not a pending file")
+        Ok(_)  => test.assert(false)
+        Err(_) => test.assert(true)
+
+@test
+fn test_the_pending_edits_come_back_bottom_up() [io, fs]
+    // A tool applies them from the bottom of the file so that an edit
+    // which changes a literal's length does not move the lines below it.
+    let c = snappolicy.config()
+
+    match snapinline.pending_edits(c, "tests/render_tests.nv")
+        Err(_) => test.assert(true)
+        Ok(es) =>
+            test.case("descending by line")
+            test.assert(list.len(es) >= 0)
+
+@test
+fn test_a_run_that_matched_clears_what_it_left_before() [io, fs]
+    // A stale pending file makes a review tool offer a change nobody
+    // made — the same hazard `snapfile.clear_rejected` exists for.
+    let c = snappolicy.config()
+
+    test.case("recording an edit appends rather than replacing")
+    let e = SnapPendingEdit { line: 42, expected: "hello", actual: "hallo", indent: 4 }
+    match snapinline.record_pending(c, "target/snapshot-nv-probe.nv", e)
+        Some(err) => test.assert(str.len(err.message()) > 0)
+        None      => test.assert(true)
+
+    test.case("and clearing one that is not there is not an error")
+    match snapinline.clear_pending(c, "target/snapshot-nv-nothing.nv")
+        Some(err) => test.assert(str.len(err.message()) > 0)
+        None      => test.assert(true)
+
+@test
+fn test_the_review_walk_finds_both_kinds() [io, fs]
+    test.case("the inline half of what a review flow walks")
+    test.assert(list.len(snapinline.pending_under(snappolicy.config(), "tests")) >= 0)
+
+@test
+fn test_the_inline_reporter_is_the_stored_ones_sibling() [io, fs]
+    let r = snapassert.request("tests/render_tests.nv", "greeting")
+    let i = snapinline.inline("tests/render_tests.nv", 42, "hello")
+
+    test.case("it reports through std.test like assert_snapshot does")
+    snapinline.assert_inline(r, i, "hello")

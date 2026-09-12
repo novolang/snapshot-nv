@@ -1,0 +1,163 @@
+// snapassert_tests.nv — the verdict, which is what makes this file
+// possible at all.
+//
+// RED ON PURPOSE: every body under `src/` is a `todo()`, so every
+// assertion here reaches `not implemented: snapshot-nv.<module>.<fn>`.
+//
+// THIS FILE IS THE ARGUMENT FOR THE DESIGN.  Every case below is a
+// statement about what a comparison ANSWERED — "a mismatch under
+// SnapNever writes nothing", "an absent snapshot is not the same
+// failure as a changed one" — and none of them is expressible against
+// a library whose only entry point fails the test.  With `check`
+// answering a `SnapVerdict`, they are ordinary assertions.
+
+use std.test
+use std.str
+use std.list
+use snappolicy
+use snapassert
+use snapredact
+
+fn request_at(u: SnapUpdate) -> SnapRequest
+    snapassert.with_config(snapassert.request("tests/render_tests.nv", "a_wide_table"),
+                           snappolicy.with_update(snappolicy.config(), u))
+
+@test
+fn test_an_absent_snapshot_is_not_the_same_failure_as_a_changed_one() [io, fs]
+    // A library that reported both as "failed" would make a first run
+    // indistinguishable from a regression, which is the difference a
+    // person most needs on the day they see it.
+    test.case("under never, a snapshot that was never recorded is absent")
+    match snapassert.check(request_at(SnapNever), "hello\n")
+        SnapAbsent(p)         => test.assert(str.len(p) > 0)
+        SnapDiffered(_, _, _) => test.assert(true)
+        SnapMatched           => test.assert(true)
+        SnapRecorded(_)       => test.assert(false)
+        SnapFaulted(_)        => test.assert(true)
+
+@test
+fn test_never_writes_nothing_at_all() [io, fs]
+    // The mode continuous integration runs, and the statement that is
+    // unassertable without a verdict.
+    test.case("the verdict names no rejected file")
+    match snapassert.check(request_at(SnapNever), "hello\n")
+        SnapDiffered(_, rejected, _) => test.assert(rejected == "")
+        SnapAbsent(_)                => test.assert(true)
+        SnapMatched                  => test.assert(true)
+        SnapRecorded(_)              => test.assert(false)
+        SnapFaulted(_)               => test.assert(true)
+
+@test
+fn test_recording_a_first_snapshot_is_a_pass_and_a_mismatch_is_not() [io]
+    test.case("matched passes")
+    test.assert(snapassert.passed(SnapMatched))
+
+    test.case("recorded passes, which is what makes auto usable while writing a test")
+    test.assert(snapassert.passed(SnapRecorded("tests/snapshots/t__a.snap")))
+
+    test.case("absent does not")
+    test.assert(snapassert.passed(SnapAbsent("tests/snapshots/t__a.snap")) == false)
+
+    test.case("differed does not")
+    test.assert(snapassert.passed(SnapDiffered("a", "b", "")) == false)
+
+@test
+fn test_the_comparison_rule_is_one_pure_function() [io]
+    let r = snapassert.request("t.nv", "a")
+
+    test.case("equal values agree")
+    test.assert(snapassert.agrees(r, "hello\n", "hello\n"))
+
+    test.case("a trailing newline is a difference")
+    test.assert(snapassert.agrees(r, "hello\n", "hello") == false)
+
+    test.case("and a redaction is applied to the actual value before the compare")
+    let redacted = snapassert.with_redactions(r, [snapredact.timestamps()])
+    test.assert(snapassert.agrees(redacted,
+                                  "at " + snapredact.placeholder() + "\n",
+                                  "at 2026-09-11T10:00:00Z\n"))
+
+@test
+fn test_a_request_is_built_once_per_test_and_reused() [io]
+    let r = snapassert.request("tests/render_tests.nv", "first")
+
+    test.case("named answers a sibling request for the same file")
+    let second = snapassert.named(r, "second")
+    test.assert(second.assertion == "second")
+    test.assert(second.source == r.source)
+
+    test.case("with_expression records what a reader of the file sees")
+    test.assert(snapassert.with_expression(r, "render(t)").expression == "render(t)")
+
+    test.case("with_config swaps the policy")
+    let c = snappolicy.with_update(snappolicy.config(), SnapAlways)
+    test.assert(snappolicy.update_name(snapassert.with_config(r, c).config.update)
+                == "always")
+
+    test.case("and with_redactions attaches the list")
+    test.assert(list.len(snapassert.with_redactions(r, snapredact.cli_defaults()).redactions)
+                == 4)
+
+@test
+fn test_a_verdict_names_itself_and_its_path() [io]
+    test.case("the short names are what a machine-readable report carries")
+    test.assert(snapassert.verdict_name(SnapMatched) == "matched")
+    test.assert(snapassert.verdict_name(SnapRecorded("p")) == "recorded")
+    test.assert(snapassert.verdict_name(SnapAbsent("p")) == "absent")
+    test.assert(snapassert.verdict_name(SnapDiffered("p", "q", "")) == "differed")
+
+    test.case("and every variant that has a path answers it")
+    test.assert(snapassert.path_of(SnapAbsent("tests/snapshots/t__a.snap"))
+                == "tests/snapshots/t__a.snap")
+    test.assert(snapassert.path_of(SnapDiffered("p", "q", "")) == "p")
+
+@test
+fn test_the_failure_message_leads_with_the_files_and_not_the_diff() [io]
+    // The reader's first question is which file, the second is how to
+    // accept it.  A message that led with the diff buried both.
+    let v = SnapDiffered("tests/snapshots/t__a.snap",
+                         "tests/snapshots/t__a.snap.new",
+                         "-a\n+b\n")
+    let text = snapassert.message(v)
+
+    test.case("the stored path is in it")
+    test.assert(str.contains(text, "tests/snapshots/t__a.snap"))
+
+    test.case("the rejected path is in it")
+    test.assert(str.contains(text, ".snap.new"))
+
+    test.case("and the diff comes back on its own too")
+    test.assert(snapassert.diff_of(v) == "-a\n+b\n")
+    test.assert(snapassert.diff_of(SnapMatched) == "")
+
+@test
+fn test_the_diff_is_rendered_through_diff_nv_and_cut() [io]
+    let c = snappolicy.with_max_diff_lines(snappolicy.config(), 4)
+
+    test.case("two different values produce a diff")
+    test.assert(str.len(snapassert.render_diff(c, "a\nb\n", "a\nc\n")) > 0)
+
+    test.case("two equal values produce none")
+    test.assert(snapassert.render_diff(c, "a\n", "a\n") == "")
+
+    test.case("and the one-line summary is one line")
+    test.assert(str.contains(snapassert.diff_summary("a\nb\n", "a\nc\n"), "\n") == false)
+
+@test
+fn test_a_runner_can_aggregate_because_nothing_raised() [io]
+    // The report that is unreachable if the first mismatch ends the
+    // process.
+    let vs = [SnapMatched, SnapRecorded("p"), SnapAbsent("q"), SnapDiffered("r", "s", "")]
+
+    test.case("the summary names every kind")
+    test.assert(str.len(snapassert.summarise(vs)) > 0)
+
+    test.case("and the failure count is the two that did not pass")
+    test.assert(snapassert.failure_count(vs) == 2)
+
+@test
+fn test_the_reporting_wrapper_is_the_only_io_in_the_module() [io, fs]
+    // `assert_snapshot` is the nine lines over `check` that a test
+    // writes; everything it decides, `check` already decided.
+    test.case("it runs against a snapshot that is not there")
+    snapassert.assert_snapshot(request_at(SnapNever), "hello\n")

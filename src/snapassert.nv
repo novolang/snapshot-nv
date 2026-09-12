@@ -1,0 +1,346 @@
+// snapassert.nv — the assertion, which answers instead of raising.
+//
+// Every body here is a `todo()`; the signatures are the design.
+//
+// THE LOAD-BEARING INTERFACE IS `SnapVerdict`.  `check` compares a
+// value against the stored snapshot and ANSWERS what happened; it never
+// fails a test, never prints, and never decides what a mismatch means.
+// `assert_snapshot` is a nine-line wrapper over it that reports through
+// `std.test`, and it is the only `[io]` function here.
+//
+// Every other snapshot library makes the assertion the primitive, and
+// pays for it three times.
+//
+//   1. THE LIBRARY CANNOT BE TESTED BY THE LIBRARY.  "A mismatch under
+//      `SnapNever` writes nothing" is a statement about a verdict.
+//      Where the only entry point fails the test, asserting it means
+//      catching a panic and reading a message.
+//   2. A REVIEW TOOL NEEDS A SECOND CODE PATH.  `novo test --review`
+//      wants the same comparison with a different consequence.  With a
+//      verdict it is the same call.
+//   3. A RUNNER CANNOT AGGREGATE.  "Eleven snapshots changed" is the
+//      useful report, and it is unreachable if the first mismatch ends
+//      the process.
+//
+// AND THE POLICY IS AN ARGUMENT, which is the other half of the same
+// decision — see `snappolicy`'s module comment.  Together they make
+// `check` `[fs]`: it reads a file and may write one, and it reads no
+// environment and prints nothing.
+//
+// WHAT `novo test` WOULD HAVE TO EXPOSE, named here and filed nowhere:
+//
+//   · **A test's own identity.**  `std.test` gives a running test no
+//     way to learn its name or its source file, so `SnapRequest` takes
+//     both as text and every call site repeats them.  insta's macro
+//     reads them from the compiler; the equivalent here is something
+//     like `test.current_name()` and `test.current_source()`, and
+//     without them a renamed test silently keeps its old snapshot.
+//   · **`novo test --review`** — walk the `.new` files
+//     (`snapfile.rejected_under`), show each diff, accept or reject
+//     (`snapfile.accept_rejected` / `clear_rejected`).  Every part of
+//     that except the terminal is in this package already.
+//   · **`novo test --update-snapshots[=never|new|auto|always]`**, which
+//     sets `SnapConfig.update` rather than exporting an environment
+//     variable, so one run can hold two policies.
+//   · **The used-name set.**  The unused-snapshot check needs every
+//     name the run asked for; only the runner sees all of them.
+//     `snapfile.unused_names` is the arithmetic, waiting for the list.
+
+use snappolicy
+use snapfile
+use snapredact
+
+// What a comparison found.
+//
+// Five answers, and the split that matters is between `SnapAbsent` and
+// `SnapDiffered`: a snapshot that has never been recorded is a
+// different thing from one that changed, the update policy treats them
+// differently, and a library that reported both as "failed" would make
+// a first run indistinguishable from a regression.
+pub enum SnapVerdict
+    // The value equals the stored snapshot.  Nothing was written, and
+    // any stale `.new` beside it was removed.
+    SnapMatched
+    // There was no stored snapshot and the policy recorded one.  The
+    // path is where it landed, so a runner can say so.
+    SnapRecorded(path: Str)
+    // There was no stored snapshot and the policy would not record
+    // one.  A failure, and a different failure from a mismatch.
+    SnapAbsent(path: Str)
+    // The value differs.  `rejected` is where the `.new` file went, or
+    // `""` when the policy wrote none; `diff` is the rendered unified
+    // diff, already cut to the configured line ceiling.
+    SnapDiffered(path: Str, rejected: Str, diff: Str)
+    // Something about the file itself went wrong.
+    SnapFaulted(why: snapfile.SnapError)
+
+// Everything a check needs except the value.
+//
+// A value built once per test and reused for every assertion in it,
+// which is also what makes several snapshots in one test cheap.
+pub struct SnapRequest
+    config: snappolicy.SnapConfig
+    // The test's source file, as the caller spells it.  `std.test`
+    // cannot tell a running test its own file; see the module comment.
+    source: Str
+    // The assertion's name, unique within the source file.
+    assertion: Str
+    // The expression the value came from, as text, for the header.
+    expression: Str
+    // Applied, in order, before the comparison and before the write.
+    redactions: [snapredact.SnapRedaction]
+
+// A request with the default configuration and no redactions.
+//
+// ```novo
+// use snapassert
+//
+// fn main() [io]
+//     println(snapassert.request("tests/render_tests.nv", "a_wide_table").assertion)
+// ```
+pub fn request(source: Str, assertion: Str) -> SnapRequest []
+    todo("snapshot-nv.snapassert.request")
+
+// The request with a different configuration.
+//
+// ```novo
+// use snappolicy
+// use snapassert
+//
+// fn main() [io]
+//     let r = snapassert.request("t.nv", "a")
+//     let c = snappolicy.with_update(snappolicy.config(), SnapNever)
+//     println(snappolicy.update_name(snapassert.with_config(r, c).config.update))
+// ```
+pub fn with_config(r: SnapRequest, c: snappolicy.SnapConfig) -> SnapRequest []
+    todo("snapshot-nv.snapassert.with_config")
+
+// The request with redactions.
+//
+// ```novo
+// use snapassert
+// use snapredact
+// use std.list
+//
+// fn main() [io]
+//     let r = snapassert.request("t.nv", "a")
+//     let with = snapassert.with_redactions(r, snapredact.cli_defaults())
+//     println("${list.len(with.redactions)}")
+// ```
+pub fn with_redactions(r: SnapRequest, rs: [snapredact.SnapRedaction]) -> SnapRequest []
+    todo("snapshot-nv.snapassert.with_redactions")
+
+// The request with the expression text a reader of the file will see.
+//
+// ```novo
+// use snapassert
+//
+// fn main() [io]
+//     let r = snapassert.request("t.nv", "a")
+//     println(snapassert.with_expression(r, "render(t)").expression)
+// ```
+pub fn with_expression(r: SnapRequest, expression: Str) -> SnapRequest []
+    todo("snapshot-nv.snapassert.with_expression")
+
+// The request for another assertion in the same source file.
+//
+// The call a test with several snapshots makes, so the source file and
+// the configuration are written once.
+//
+// ```novo
+// use snapassert
+//
+// fn main() [io]
+//     let r = snapassert.request("t.nv", "first")
+//     println(snapassert.named(r, "second").assertion)
+// ```
+pub fn named(r: SnapRequest, assertion: Str) -> SnapRequest []
+    todo("snapshot-nv.snapassert.named")
+
+// Compare a value with its stored snapshot, and answer what happened.
+//
+// THE PRIMITIVE.  Reads the stored file, applies the redactions to the
+// actual value, compares, and — according to the policy — writes the
+// snapshot, writes a `.new` beside it, or writes nothing.  It fails
+// nothing and prints nothing.
+//
+// `[fs]`: a file read, and at most one file written. No environment, no
+// clock, no terminal.
+//
+// ```novo
+// use snapassert
+//
+// fn main() [io, fs]
+//     let r = snapassert.request("tests/render_tests.nv", "a_wide_table")
+//     println(snapassert.verdict_name(snapassert.check(r, "hello\n")))
+// ```
+pub fn check(r: SnapRequest, value: Str) -> SnapVerdict [fs]
+    todo("snapshot-nv.snapassert.check")
+
+// Compare against a snapshot the caller already has in hand.
+//
+// `[]`, and the whole comparison rule in one place: apply the
+// redactions, compare the strings.  Published because it is what makes
+// every interesting case in this package's own suite a pure function —
+// and because a caller with the stored value from somewhere else (a
+// fixture, a database, another process) should not have to go through
+// a file to use the rule.
+//
+// ```novo
+// use snapassert
+//
+// fn main() [io]
+//     let r = snapassert.request("t.nv", "a")
+//     let same = snapassert.agrees(r, "hello\n", "hello\n")
+//     println("${same}")
+// ```
+pub fn agrees(r: SnapRequest, stored: Str, actual: Str) -> Bool []
+    todo("snapshot-nv.snapassert.agrees")
+
+// Run a check and report it through `std.test`.
+//
+// The nine lines over `check` that a test writes, and the only `[io]`
+// function in the module: on anything but `SnapMatched` it calls
+// `test.case` with the assertion's name and `test.fail` with the
+// message below.
+//
+// ```novo
+// use snapassert
+//
+// fn main() [io, fs]
+//     let r = snapassert.request("tests/render_tests.nv", "a_wide_table")
+//     snapassert.assert_snapshot(r, "hello\n")
+// ```
+pub fn assert_snapshot(r: SnapRequest, value: Str) [fs, io]
+    todo("snapshot-nv.snapassert.assert_snapshot")
+
+// Whether a verdict means the test passed.
+//
+// `SnapMatched` and `SnapRecorded` — recording a first snapshot is a
+// pass, which is what makes `SnapAuto` usable while a test is being
+// written.
+//
+// ```novo
+// use snapassert
+//
+// fn main() [io]
+//     println("${snapassert.passed(SnapMatched)}")
+// ```
+pub fn passed(v: SnapVerdict) -> Bool []
+    todo("snapshot-nv.snapassert.passed")
+
+// The verdict's short name: `matched`, `recorded`, `absent`,
+// `differed`, `faulted`.
+//
+// For a machine-readable report, and for a runner's summary line.
+//
+// ```novo
+// use snapassert
+//
+// fn main() [io]
+//     println(snapassert.verdict_name(SnapMatched))
+// ```
+pub fn verdict_name(v: SnapVerdict) -> Str []
+    todo("snapshot-nv.snapassert.verdict_name")
+
+// The message a person reads when a snapshot fails.
+//
+// The stored path, the rejected path, what to run to accept it, and
+// then the diff.  In that order: the reader's first question is which
+// file, the second is how to accept, and the diff is what they scroll
+// through.  A message that led with the diff buried both.
+//
+// ```novo
+// use snapassert
+//
+// fn main() [io]
+//     println(snapassert.message(SnapAbsent("tests/snapshots/t__a.snap")))
+// ```
+pub fn message(v: SnapVerdict) -> Str []
+    todo("snapshot-nv.snapassert.message")
+
+// The rendered diff a verdict carries, or `""`.
+//
+// ```novo
+// use snapassert
+//
+// fn main() [io]
+//     println(snapassert.diff_of(SnapMatched))
+// ```
+pub fn diff_of(v: SnapVerdict) -> Str []
+    todo("snapshot-nv.snapassert.diff_of")
+
+// The stored snapshot's path, whatever the verdict.
+//
+// Every variant but `SnapFaulted` carries one, and a runner collecting
+// "what changed in this run" wants the path from all of them.
+//
+// ```novo
+// use snapassert
+//
+// fn main() [io]
+//     println(snapassert.path_of(SnapAbsent("tests/snapshots/t__a.snap")))
+// ```
+pub fn path_of(v: SnapVerdict) -> Str []
+    todo("snapshot-nv.snapassert.path_of")
+
+// The unified diff between the stored value and the actual one.
+//
+// Three calls into diff-nv and no algorithm of this package's own:
+// tokenise both sides by line, walk them, render unified with the
+// configured context. Cut to `config.max_diff_lines` with the count of
+// what was cut on the end, because a thousand-line diff in a test log
+// buries every other failure in the run.
+//
+// `[]`, so a review tool can render a diff it is not going to assert
+// on.
+//
+// ```novo
+// use snappolicy
+// use snapassert
+//
+// fn main() [io]
+//     println(snapassert.render_diff(snappolicy.config(), "a\n", "b\n"))
+// ```
+pub fn render_diff(c: snappolicy.SnapConfig, stored: Str, actual: Str) -> Str []
+    todo("snapshot-nv.snapassert.render_diff")
+
+// The one-line summary of a difference: how many lines went and came.
+//
+// What a runner prints per changed snapshot in a list of eleven, where
+// the diff itself belongs behind a flag.
+//
+// ```novo
+// use snapassert
+//
+// fn main() [io]
+//     println(snapassert.diff_summary("a\nb\n", "a\nc\n"))
+// ```
+pub fn diff_summary(stored: Str, actual: Str) -> Str []
+    todo("snapshot-nv.snapassert.diff_summary")
+
+// A runner's report over many verdicts: matched, recorded, absent,
+// differed, faulted.
+//
+// The aggregation that a library which raises on the first mismatch
+// cannot produce, and the reason `check` answers.
+//
+// ```novo
+// use snapassert
+//
+// fn main() [io]
+//     println(snapassert.summarise([SnapMatched, SnapMatched]))
+// ```
+pub fn summarise(vs: [SnapVerdict]) -> Str []
+    todo("snapshot-nv.snapassert.summarise")
+
+// How many of a run's verdicts were not passes.
+//
+// ```novo
+// use snapassert
+//
+// fn main() [io]
+//     println("${snapassert.failure_count([SnapMatched])}")
+// ```
+pub fn failure_count(vs: [SnapVerdict]) -> Int []
+    todo("snapshot-nv.snapassert.failure_count")
