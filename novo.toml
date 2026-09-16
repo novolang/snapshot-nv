@@ -1,6 +1,6 @@
 [package]
 name        = "snapshot-nv"
-version     = "0.0.1"
+version     = "0.0.2"
 description = "Snapshot assertions for novo-lang: the stored file is a two-line-delimited header and then the value verbatim, the comparison ANSWERS a SnapVerdict instead of raising, and the update policy is a value the runner passes rather than an environment variable read inside the assertion — so one run can compare one suite and accept another, and the library can be tested by the library.  Mismatches render through diff-nv and land in a `.new` file beside the snapshot.  Interface only — every body is a todo()."
 license     = "Apache-2.0"
 
