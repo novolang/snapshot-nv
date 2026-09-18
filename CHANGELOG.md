@@ -8,7 +8,19 @@ with the pre-1.0 rule that a breaking change bumps the MINOR number.
 ## 0.0.2 — 2026-09-16
 
 README rewritten to the package README style guide
-(docs/writing-a-readme.md); no change to the interface.
+(docs/writing-a-readme.md).
+
+### Fixed
+
+- The README's example stands on its own.  It opened `use tblrender` —
+  a module of table-nv, which this package does not depend on and has
+  no reason to — and then called `fixture()` and `style()`, which were
+  declared nowhere.  `novo doc` could not resolve the `use`, so the
+  block failed to compile and `novo pkg publish` refused the release
+  over it.  The value under test is now a `Str` the example produces
+  itself, which is also the more accurate picture: this package never
+  sees anything but the text the code under test returned.  No
+  dependency was added — the closure is still unicode-nv and diff-nv.
 
 ## 0.0.1 — 2026-09-11
 

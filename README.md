@@ -79,21 +79,28 @@ novo pkg add snapshot-nv
 use std.test
 use snapassert
 use snapredact
-use tblrender
+
+// Stands in for the code under test. This package never sees anything
+// but the `Str` that code produced, which is why it does not care
+// whether the text came from a renderer, a formatter or a serialiser.
+fn rendered_receipt() -> Str []
+    "order 4021\nplaced 2026-09-18T11:04:22Z\ntotal  49.90"
 
 @test
-fn test_a_wide_table_renders() [fs, io]
+fn test_the_receipt_renders() [fs, io]
     // The source file and the assertion name are written out, because
     // a running test cannot ask what it is called. See rule 9.
     let r = snapassert.with_redactions(
-              snapassert.request("tests/render_tests.nv", "a_wide_table"),
+              snapassert.request("tests/render_tests.nv", "the_receipt"),
               // Timestamps, identifiers and absolute paths, replaced
-              // before the value is stored.
+              // before the value is stored. A real renderer's timestamp
+              // is different on every run, and a snapshot that stored
+              // one unredacted fails the next morning.
               snapredact.cli_defaults())
 
-    // Compares against tests/snapshots/render_tests__a_wide_table.snap
+    // Compares against tests/snapshots/render_tests__the_receipt.snap
     // and reports through std.test if it differs.
-    snapassert.assert_snapshot(r, tblrender.render(fixture(), style()))
+    snapassert.assert_snapshot(r, rendered_receipt())
 ```
 
 Build and test with `novo pkg build` and `novo test`. Today `novo test`
