@@ -1,7 +1,5 @@
 // snapassert.nv — the assertion, which answers instead of raising.
 //
-// Every body here is a `todo()`; the signatures are the design.
-//
 // THE LOAD-BEARING INTERFACE IS `SnapVerdict`.  `check` compares a
 // value against the stored snapshot and ANSWERS what happened; it never
 // fails a test, never prints, and never decides what a mismatch means.
@@ -49,6 +47,9 @@
 use snappolicy
 use snapfile
 use snapredact
+use diffunit
+use diffscript
+use diffrender
 
 // What a comparison found.
 //
@@ -90,6 +91,179 @@ pub struct SnapRequest
     // Applied, in order, before the comparison and before the write.
     redactions: [snapredact.SnapRedaction]
 
+// ── private helpers ──────────────────────────────────────────────────
+//
+// One named function per decision `check` makes, so that every arm of
+// the policy reads as the sentence it is.  Private because the public
+// vocabulary for all of it is the verdict.
+
+// The actual value as the comparison sees it: the request's redactions
+// applied, in order, to what the caller produced.  The one rule the
+// whole package rests on, named once.
+fn actual_of(r: SnapRequest, value: Str) -> Str []
+    snapredact.apply_all(r.redactions, value)
+
+// The snapshot the actual value would be written as: the request's
+// header — source, assertion, expression, and the labels of the
+// redactions whose work the value already carries — and the value.
+fn stored_as(r: SnapRequest, actual: Str) -> snapfile.SnapStored []
+    let expressed = snapfile.with_expression(snapfile.header(r.source, r.assertion),
+                                             r.expression)
+    let labelled = snapfile.with_redactions(expressed, snapredact.labels(r.redactions))
+    SnapStored { header: labelled, value: actual }
+
+// Write the actual value where the stored snapshot belongs, and answer
+// `ok` when it landed.  A refused write is a fault and not a panic: a
+// snapshot that could not be written is something a report says, and
+// the verdict is where it is said.
+fn store(r: SnapRequest, path: Str, actual: Str, ok: SnapVerdict) -> SnapVerdict [fs]
+    match snapfile.write(path, stored_as(r, actual))
+        Some(e) => SnapFaulted(e)
+        None    => ok
+
+// A missing snapshot under a policy that leaves the evidence: the value
+// that would have been stored lands in the `.new` file beside the
+// snapshot, so the first run of a new test leaves something a person can
+// look at.  The verdict stays the absence — `SnapAbsent` carries the
+// snapshot's path and has no rejected one to carry — and a write that
+// could not land is the fault it is, rather than a silence.
+fn absent_beside(r: SnapRequest, path: Str, actual: Str) -> SnapVerdict [fs]
+    match snapfile.write_rejected(r.config, path, stored_as(r, actual))
+        Ok(_)  => SnapAbsent(path)
+        Err(e) => SnapFaulted(e)
+
+// There was nothing stored: record one when the policy records missing
+// snapshots, leave the value in a `.new` when the policy leaves rejected
+// files, and answer the absence by name either way.  This is the split
+// `SnapAbsent` exists for — a snapshot that was never recorded is not
+// one that changed — and the policy decides what is written, not what
+// the answer is called.
+fn no_stored(r: SnapRequest, path: Str, actual: Str) -> SnapVerdict [fs]
+    if snappolicy.records_when_missing(r.config.update)
+        store(r, path, actual, SnapRecorded(path))
+    elif snappolicy.leaves_rejected(r.config.update)
+        absent_beside(r, path, actual)
+    else
+        SnapAbsent(path)
+
+// The value equals the stored snapshot.  Nothing is written, and a
+// stale `.new` beside it goes: a rejected file next to a passing
+// snapshot makes a review tool offer a change nobody made.  A clear
+// that fails is not worth failing an assertion over — the value
+// matched, which is what the verdict says — so the answer is dropped.
+fn matched(r: SnapRequest, path: Str) -> SnapVerdict [fs]
+    let _ = snapfile.clear_rejected(r.config, path)
+    SnapMatched
+
+// A stored snapshot was read, so it either matches or the policy
+// decides what a difference means.  `SnapAlways` overwrites, and the
+// value is then the stored one — which is what `SnapMatched` says, the
+// five answers being the whole vocabulary; the two `.new`-writing modes
+// leave the evidence and differ.
+fn against(r: SnapRequest, path: Str, stored: Str, actual: Str) -> SnapVerdict [fs]
+    if agrees(r, stored, actual)
+        matched(r, path)
+    elif snappolicy.overwrites(r.config.update)
+        store(r, path, actual, SnapMatched)
+    else
+        differed(r, path, stored, actual)
+
+// A differing value under a policy that leaves the evidence: the
+// rejected file lands, and the verdict carries where.
+fn rejected_beside(r: SnapRequest, path: Str, actual: Str, diff: Str) -> SnapVerdict [fs]
+    match snapfile.write_rejected(r.config, path, stored_as(r, actual))
+        Ok(rejected) => SnapDiffered(path, rejected, diff)
+        Err(e)       => SnapFaulted(e)
+
+// A differing value.  The diff is rendered first, because it belongs in
+// the verdict either way, and only then does the policy decide whether
+// there is a file to point at.
+fn differed(r: SnapRequest, path: Str, stored: Str, actual: Str) -> SnapVerdict [fs]
+    let diff = render_diff(r.config, stored, actual)
+    if snappolicy.leaves_rejected(r.config.update)
+        rejected_beside(r, path, actual, diff)
+    else
+        SnapDiffered(path, "", diff)
+
+// The stored file read: a snapshot that parses is compared, one that is
+// missing is the absence case, and anything else — an assertion name
+// that cannot be a filename, a header this build does not read, a file
+// that cannot be read — is a fault, carrying the reason.
+fn check_at(r: SnapRequest, path: Str, actual: Str) -> SnapVerdict [fs]
+    match snapfile.read(path)
+        Ok(stored)          => against(r, path, snapfile.value_of(stored), actual)
+        Err(SnapMissing(_)) => no_stored(r, path, actual)
+        Err(e)              => SnapFaulted(e)
+
+// The message for a snapshot that was never recorded: the path, and the
+// one thing that records it.  Only `SnapAuto` and `SnapAlways` write a
+// missing snapshot, so the mode has to be asked for by name — and the
+// name is the published one, not a spelling repeated here.
+//
+// The `.new` file the default policy leaves is named as a possibility
+// rather than as a path, because the verdict carries the snapshot's path
+// and not the rejected one.
+fn absent_message(path: Str) -> Str []
+    let how = "re-run with " + snappolicy.env_name() + "=auto to record it"
+    let beside = "a `.new` file beside it, when the policy leaves one, holds what it would have been"
+    "no snapshot at `${path}`: " + how + "\n" + beside
+
+// The message for a differing value: the stored path, the rejected
+// path, how to accept it, and then the diff — in that order, because
+// the reader's first question is which file and their second is how to
+// accept it.  A message that led with the diff buried both.
+//
+// Under `SnapNever` there is no rejected file, and the message says so
+// rather than pointing at a path nothing wrote.  A verdict carrying no
+// diff ends after the instruction, with no empty diff block under it.
+fn differed_message(path: Str, rejected: Str, diff: Str) -> Str []
+    let head = if str.is_empty(rejected)
+        "the snapshot at `${path}` differs, and no rejected file was written"
+    else
+        "the snapshot at `${path}` differs; the new value is in `${rejected}`"
+    let how = if str.is_empty(rejected)
+        "re-run with the `new` or `auto` update policy to write it beside the snapshot"
+    else
+        "accept it with `snapfile.accept_rejected`, or delete it to keep the stored one"
+    if str.is_empty(diff)
+        head + "\n" + how
+    else
+        head + "\n" + how + "\n" + diff
+
+// `3 recorded` — what one kind contributes to a run's summary.  The
+// kinds are counted through `verdict_name`, so a summary and a
+// machine-readable report can never disagree about what a verdict is
+// called.
+fn count_phrase(vs: [SnapVerdict], name: Str) -> Str []
+    var n = 0
+    for v in vs
+        if verdict_name(v) == name
+            n = n + 1
+    str.from_int(n) + " " + name
+
+// The five verdict names, in the order a run's summary reads them.
+fn report_names() -> [Str] []
+    ["matched", "recorded", "absent", "differed", "faulted"]
+
+// The context a rendered diff carries: three lines around each hunk,
+// which is `diff -U3` and what a `git diff` shows.  A configuration
+// field of its own only if one ever wants a different number, the
+// ceiling a reader actually changes being `max_diff_lines`.
+fn diff_context() -> Int []
+    3
+
+// The rendered diff, cut to the configured ceiling with the count of
+// what was cut on the end: a thousand-line difference in a test log
+// buries every other failure in the run.
+fn cut(c: snappolicy.SnapConfig, text: Str) -> Str []
+    let lines = str.split_lines(text)
+    let over = list.len(lines) - c.max_diff_lines
+    if over <= 0
+        text
+    else
+        let kept = list.join(list.take(lines, c.max_diff_lines), "\n")
+        kept + "\n... " + str.from_int(over) + " more lines of diff\n"
+
 // A request with the default configuration and no redactions.
 //
 // ```novo
@@ -99,7 +273,12 @@ pub struct SnapRequest
 //     println(snapassert.request("tests/render_tests.nv", "a_wide_table").assertion)
 // ```
 pub fn request(source: Str, assertion: Str) -> SnapRequest []
-    todo("snapshot-nv.snapassert.request")
+    SnapRequest {
+        config: snappolicy.config(),
+        source: source,
+        assertion: assertion,
+        expression: "",
+        redactions: [] }
 
 // The request with a different configuration.
 //
@@ -113,7 +292,12 @@ pub fn request(source: Str, assertion: Str) -> SnapRequest []
 //     println(snappolicy.update_name(snapassert.with_config(r, c).config.update))
 // ```
 pub fn with_config(r: SnapRequest, c: snappolicy.SnapConfig) -> SnapRequest []
-    todo("snapshot-nv.snapassert.with_config")
+    SnapRequest {
+        config: c,
+        source: r.source,
+        assertion: r.assertion,
+        expression: r.expression,
+        redactions: r.redactions }
 
 // The request with redactions.
 //
@@ -128,7 +312,12 @@ pub fn with_config(r: SnapRequest, c: snappolicy.SnapConfig) -> SnapRequest []
 //     println("${list.len(with.redactions)}")
 // ```
 pub fn with_redactions(r: SnapRequest, rs: [snapredact.SnapRedaction]) -> SnapRequest []
-    todo("snapshot-nv.snapassert.with_redactions")
+    SnapRequest {
+        config: r.config,
+        source: r.source,
+        assertion: r.assertion,
+        expression: r.expression,
+        redactions: rs }
 
 // The request with the expression text a reader of the file will see.
 //
@@ -140,7 +329,12 @@ pub fn with_redactions(r: SnapRequest, rs: [snapredact.SnapRedaction]) -> SnapRe
 //     println(snapassert.with_expression(r, "render(t)").expression)
 // ```
 pub fn with_expression(r: SnapRequest, expression: Str) -> SnapRequest []
-    todo("snapshot-nv.snapassert.with_expression")
+    SnapRequest {
+        config: r.config,
+        source: r.source,
+        assertion: r.assertion,
+        expression: expression,
+        redactions: r.redactions }
 
 // The request for another assertion in the same source file.
 //
@@ -155,7 +349,12 @@ pub fn with_expression(r: SnapRequest, expression: Str) -> SnapRequest []
 //     println(snapassert.named(r, "second").assertion)
 // ```
 pub fn named(r: SnapRequest, assertion: Str) -> SnapRequest []
-    todo("snapshot-nv.snapassert.named")
+    SnapRequest {
+        config: r.config,
+        source: r.source,
+        assertion: assertion,
+        expression: r.expression,
+        redactions: r.redactions }
 
 // Compare a value with its stored snapshot, and answer what happened.
 //
@@ -175,7 +374,9 @@ pub fn named(r: SnapRequest, assertion: Str) -> SnapRequest []
 //     println(snapassert.verdict_name(snapassert.check(r, "hello\n")))
 // ```
 pub fn check(r: SnapRequest, value: Str) -> SnapVerdict [fs]
-    todo("snapshot-nv.snapassert.check")
+    match snapfile.snapshot_path(r.config, r.source, r.assertion)
+        Ok(path) => check_at(r, path, actual_of(r, value))
+        Err(e)   => SnapFaulted(e)
 
 // Compare against a snapshot the caller already has in hand.
 //
@@ -195,7 +396,16 @@ pub fn check(r: SnapRequest, value: Str) -> SnapVerdict [fs]
 //     println("${same}")
 // ```
 pub fn agrees(r: SnapRequest, stored: Str, actual: Str) -> Bool []
-    todo("snapshot-nv.snapassert.agrees")
+    actual_of(r, actual) == stored
+
+// A function rather than two lines inside `assert_snapshot`, so that the
+// failure path is one uncovered place with one reason rather than two.
+//
+// cov: skip — runs only when a snapshot assertion fails, which fails the
+// calling test
+fn report(r: SnapRequest, v: SnapVerdict) [io]
+    test.case(r.assertion)
+    test.fail(message(v))
 
 // Run a check and report it through `std.test`.
 //
@@ -212,7 +422,11 @@ pub fn agrees(r: SnapRequest, stored: Str, actual: Str) -> Bool []
 //     snapassert.assert_snapshot(r, "hello\n")
 // ```
 pub fn assert_snapshot(r: SnapRequest, value: Str) [fs, io]
-    todo("snapshot-nv.snapassert.assert_snapshot")
+    let v = check(r, value)
+    if not passed(v)
+        // cov: skip — the failure path of a snapshot assertion, which
+        // fails the calling test
+        report(r, v)
 
 // Whether a verdict means the test passed.
 //
@@ -227,7 +441,12 @@ pub fn assert_snapshot(r: SnapRequest, value: Str) [fs, io]
 //     println("${snapassert.passed(SnapMatched)}")
 // ```
 pub fn passed(v: SnapVerdict) -> Bool []
-    todo("snapshot-nv.snapassert.passed")
+    match v
+        SnapMatched           => true
+        SnapRecorded(_)       => true
+        SnapAbsent(_)         => false
+        SnapDiffered(_, _, _) => false
+        SnapFaulted(_)        => false
 
 // The verdict's short name: `matched`, `recorded`, `absent`,
 // `differed`, `faulted`.
@@ -241,7 +460,12 @@ pub fn passed(v: SnapVerdict) -> Bool []
 //     println(snapassert.verdict_name(SnapMatched))
 // ```
 pub fn verdict_name(v: SnapVerdict) -> Str []
-    todo("snapshot-nv.snapassert.verdict_name")
+    match v
+        SnapMatched           => "matched"
+        SnapRecorded(_)       => "recorded"
+        SnapAbsent(_)         => "absent"
+        SnapDiffered(_, _, _) => "differed"
+        SnapFaulted(_)        => "faulted"
 
 // The message a person reads when a snapshot fails.
 //
@@ -257,7 +481,12 @@ pub fn verdict_name(v: SnapVerdict) -> Str []
 //     println(snapassert.message(SnapAbsent("tests/snapshots/t__a.snap")))
 // ```
 pub fn message(v: SnapVerdict) -> Str []
-    todo("snapshot-nv.snapassert.message")
+    match v
+        SnapMatched                        => "the snapshot matched"
+        SnapRecorded(path)                 => "recorded the snapshot at `${path}`"
+        SnapAbsent(path)                   => absent_message(path)
+        SnapDiffered(path, rejected, diff) => differed_message(path, rejected, diff)
+        SnapFaulted(why)                   => why.message()
 
 // The rendered diff a verdict carries, or `""`.
 //
@@ -268,7 +497,9 @@ pub fn message(v: SnapVerdict) -> Str []
 //     println(snapassert.diff_of(SnapMatched))
 // ```
 pub fn diff_of(v: SnapVerdict) -> Str []
-    todo("snapshot-nv.snapassert.diff_of")
+    match v
+        SnapDiffered(_, _, diff) => diff
+        _                        => ""
 
 // The stored snapshot's path, whatever the verdict.
 //
@@ -282,7 +513,12 @@ pub fn diff_of(v: SnapVerdict) -> Str []
 //     println(snapassert.path_of(SnapAbsent("tests/snapshots/t__a.snap")))
 // ```
 pub fn path_of(v: SnapVerdict) -> Str []
-    todo("snapshot-nv.snapassert.path_of")
+    match v
+        SnapRecorded(path)       => path
+        SnapAbsent(path)         => path
+        SnapDiffered(path, _, _) => path
+        SnapMatched              => ""
+        SnapFaulted(_)           => ""
 
 // The unified diff between the stored value and the actual one.
 //
@@ -303,7 +539,11 @@ pub fn path_of(v: SnapVerdict) -> Str []
 //     println(snapassert.render_diff(snappolicy.config(), "a\n", "b\n"))
 // ```
 pub fn render_diff(c: snappolicy.SnapConfig, stored: Str, actual: Str) -> Str []
-    todo("snapshot-nv.snapassert.render_diff")
+    let input = diffunit.tokenize(stored, actual, DiffLines)
+    let script = diffscript.diff(input, diffscript.default_options())
+    let options = diffrender.unified_options_named(diff_context(), "stored", "actual")
+    let text = diffrender.unified(input, script, options)
+    cut(c, text)
 
 // The one-line summary of a difference: how many lines went and came.
 //
@@ -317,7 +557,12 @@ pub fn render_diff(c: snappolicy.SnapConfig, stored: Str, actual: Str) -> Str []
 //     println(snapassert.diff_summary("a\nb\n", "a\nc\n"))
 // ```
 pub fn diff_summary(stored: Str, actual: Str) -> Str []
-    todo("snapshot-nv.snapassert.diff_summary")
+    let input = diffunit.tokenize(stored, actual, DiffLines)
+    let script = diffscript.diff(input, diffscript.default_options())
+    let counts = diffscript.counts(script)
+    let went = str.from_int(counts.0) + " removed"
+    let came = str.from_int(counts.1) + " added"
+    went + ", " + came
 
 // A runner's report over many verdicts: matched, recorded, absent,
 // differed, faulted.
@@ -332,7 +577,14 @@ pub fn diff_summary(stored: Str, actual: Str) -> Str []
 //     println(snapassert.summarise([SnapMatched, SnapMatched]))
 // ```
 pub fn summarise(vs: [SnapVerdict]) -> Str []
-    todo("snapshot-nv.snapassert.summarise")
+    let parts = [count_phrase(vs, name) for name in report_names()]
+    let total = list.len(vs)
+    let plural = if total == 1
+        ""
+    else
+        "s"
+    let head = str.from_int(total) + " snapshot" + plural + ": " + list.join(parts, ", ")
+    head + " (" + str.from_int(failure_count(vs)) + " failed)"
 
 // How many of a run's verdicts were not passes.
 //
@@ -343,4 +595,8 @@ pub fn summarise(vs: [SnapVerdict]) -> Str []
 //     println("${snapassert.failure_count([SnapMatched])}")
 // ```
 pub fn failure_count(vs: [SnapVerdict]) -> Int []
-    todo("snapshot-nv.snapassert.failure_count")
+    var n = 0
+    for v in vs
+        if not passed(v)
+            n = n + 1
+    n

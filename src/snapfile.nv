@@ -1,7 +1,5 @@
 // snapfile.nv — what is on disk, and the rule that makes it readable.
 //
-// Every body here is a `todo()`; the signatures are the design.
-//
 // THE FILE IS A HEADER AND THEN THE VALUE, VERBATIM.
 //
 //     --- snapshot-nv 1
@@ -92,6 +90,195 @@ pub enum SnapError
     // rather than resolved silently.
     SnapStale(path: Str)
 
+// ── private helpers ──────────────────────────────────────────────────
+//
+// The format's own arithmetic, and nothing else: how a message names
+// where it looked, the byte walk that finds the end of a header, the
+// path a source file's snapshots live under, and the two directory
+// walks.  They sit above their first caller because everything below
+// is written in terms of them, and none of them is public because a
+// caller has one way to spell each of these and it is the function
+// named after it.
+
+// How a message names the place it looked: the path in backticks, or
+// the text itself when the caller had no path to give `parse`.
+fn place(path: Str) -> Str []
+    if str.is_empty(path)
+        "this text"
+    else
+        "`${path}`"
+
+// The sentence for a name that cannot become a filename.
+fn name_refusal(name: Str) -> Str []
+    if str.is_empty(name)
+        "an assertion name cannot be empty"
+    else
+        "`${name}` cannot be an assertion name: it carries a path separator"
+
+// The format version a magic line declares, or `None` when the line is
+// not a magic line at all.
+fn version_of(line: Str) -> ?Int []
+    let prefix = "--- snapshot-nv "
+    if str.starts_with(line, prefix)
+        str.to_int(str.slice(line, str.len(prefix), str.len(line)))
+    else
+        None
+
+// The text after a key, which the caller has already matched as a
+// prefix of the line — so the offset is the key's own length and not a
+// number written twice.
+fn after_key(line: Str, key: Str) -> Str []
+    str.slice(line, str.len(key), str.len(line))
+
+// The redaction labels a header line carries: `a, b` is two labels,
+// and an empty field is none.
+fn split_labels(raw: Str) -> [Str] []
+    if str.is_empty(raw)
+        []
+    else
+        str.split(raw, ", ")
+
+// The value's bytes: everything from the delimiter's end to the end of
+// the file.  `at` past the end answers the empty value rather than a
+// slice with its ends the wrong way round, which is what a file that
+// stops at the delimiter line itself produces.
+fn value_tail(text: Str, at: Int) -> Str []
+    if at >= str.len(text)
+        ""
+    else
+        str.slice(text, at, str.len(text))
+
+// The name a snapshot file carries for one assertion: the source file's
+// stem, insta's double underscore, the assertion, the suffix.
+fn stem_prefix(source: Str) -> Str []
+    path.stem(source) + "__"
+
+// The assertion name inside `<stem>__<assertion><suffix>`.
+fn name_between(name: Str, prefix: Str, suffix: Str) -> Str []
+    str.slice(name, str.len(prefix), str.len(name) - str.len(suffix))
+
+// The directory a source file's snapshots live in, relative to the
+// source file's own directory.
+fn stored_dir(c: snappolicy.SnapConfig, source: Str) -> Str []
+    path.join(path.dirname(source), c.dir)
+
+// Every `.new` file under a directory, recursively, as paths, sorted so
+// two machines present the same changes in the same order.
+fn walk_rejected(c: snappolicy.SnapConfig, dir: Str) -> [Str] [fs]
+    var found: [Str] = []
+    for entry in fs.read_dir(dir)
+        let child = path.join(dir, entry)
+        if fs.is_dir(child)
+            let deeper = walk_rejected(c, child)
+            found = list.append(found, deeper)
+        elif str.ends_with(entry, c.new_suffix)
+            found = list.push(found, child)
+    found = list.sort(found)
+    found
+
+// The assertion names a directory holds for one source file's stem: the
+// entries carrying the prefix and the stored suffix, with both of them
+// taken off again.
+fn names_under(dir: Str, prefix: Str, suffix: Str) -> [Str] [fs]
+    var names: [Str] = []
+    for entry in fs.read_dir(dir)
+        if str.starts_with(entry, prefix) and str.ends_with(entry, suffix)
+            names = list.push(names, name_between(entry, prefix, suffix))
+    names = list.sort(names)
+    names
+
+// Whether the stored snapshot was written after the rejected one, which
+// is the hazard a review that runs after a rebase meets.  No stored
+// file at all is never stale: there is nothing for the `.new` to
+// overwrite.
+fn is_stale(path: Str, rejected: Str) -> Bool [fs]
+    if not fs.exists(path)
+        false
+    else
+        let stored_at = fs.file_mtime(path) ?? 0
+        let rejected_at = fs.file_mtime(rejected) ?? 0
+        stored_at > rejected_at
+
+// The directory part of a path.  One place, with a parameter that is
+// not itself named `path`, because the interface's own spelling of that
+// parameter shadows the stdlib module inside these functions and a
+// `path.dirname(...)` call would then be a name that no longer reaches
+// the module (W0002).
+fn dir_of(p: Str) -> Str []
+    path.dirname(p)
+
+// The snapshot at a path is not there, for a reason `read` gives the
+// caller: absence is the answer the update policy acts on, and an
+// existing file that cannot be read is a different answer.
+fn unreadable(path: Str) -> Result<SnapStored, SnapError> [fs]
+    if fs.exists(path)
+        Err(SnapUnreadable(path))
+    else
+        Err(SnapMissing(path))
+
+// The header walk: the four fields, and the byte the value starts at.
+// The offset counts the magic line the caller has already checked, then
+// every line it consumes, each with its newline — so it is exact for a
+// file whose value is empty, one that ends without a newline, and one
+// whose value is a YAML document full of `---` lines alike.
+fn parse_fields(path: Str, text: Str, lines: [Str]) -> Result<SnapStored, SnapError> []
+    var source = ""
+    var assertion = ""
+    var expression = ""
+    var redactions: [Str] = []
+    var value_start: ?Int = None
+    var at = str.len(list.get(lines, 0, "")) + 1
+    var i = 1
+    while i < list.len(lines)
+        let line = list.get(lines, i)
+        at = at + str.len(line) + 1
+        match line
+            "---"                                      =>
+                value_start = Some(at)
+                break
+            _ if str.starts_with(line, "source: ")     =>
+                source = after_key(line, "source: ")
+            _ if str.starts_with(line, "assertion: ")  =>
+                assertion = after_key(line, "assertion: ")
+            _ if str.starts_with(line, "expression: ") =>
+                expression = after_key(line, "expression: ")
+            _ if str.starts_with(line, "redactions: ") =>
+                redactions = split_labels(after_key(line, "redactions: "))
+            _                                          =>
+                return Err(SnapBadHeader(path, i + 1))
+        i = i + 1
+    let value_at = match value_start
+        Some(found) => found
+        None        =>
+            return Err(SnapBadHeader(path, i))
+    Ok(SnapStored {
+        header: SnapHeader {
+            version: format_version(),
+            source: source,
+            assertion: assertion,
+            expression: expression,
+            redactions: redactions },
+        value: value_tail(text, value_at) })
+
+// The version half of the walk: this build reads version 1, a newer file
+// is refused by name, and anything below 1 is not a format version.
+fn version_refusal(path: Str, v: Int) -> Result<SnapStored, SnapError> []
+    if v > format_version()
+        Err(SnapVersionAhead(path, v))
+    else
+        Err(SnapBadHeader(path, 1))
+
+// `parse`, with the caller's path attached to whatever refusal comes
+// out, so every message a file read produces names the file.
+fn parse_at(path: Str, text: Str) -> Result<SnapStored, SnapError> []
+    let lines = str.split_lines(text)
+    match version_of(list.get(lines, 0, ""))
+        None    => Err(SnapBadHeader(path, 1))
+        Some(v) => if v == format_version()
+            parse_fields(path, text, lines)
+        else
+            version_refusal(path, v)
+
 // The sentence a `Result<_, SnapError>` carries.
 //
 // SPEC § 3.4 admits a type as a `Result`'s error type only when it
@@ -111,9 +298,15 @@ pub enum SnapError
 //         Err(e) => println(e.message())
 // ```
 impl Error for SnapError
-    // Panics with `not implemented` until the bodies land.
     fn message(self) -> Str
-        todo("snapshot-nv.snapfile.SnapError.message")
+        match self
+            SnapMissing(path)         => "no snapshot at ${place(path)}"
+            SnapUnreadable(path)      => "could not read the snapshot at ${place(path)}"
+            SnapUnwritable(path)      => "could not write the snapshot at ${place(path)}"
+            SnapBadHeader(path, line) => "not a snapshot header at line ${line} of ${place(path)}"
+            SnapVersionAhead(path, v) => "${place(path)} is format version ${v}, and this build reads ${format_version()}"
+            SnapBadName(name)         => name_refusal(name)
+            SnapStale(path)           => "the snapshot at ${place(path)} changed after the rejected one was written"
 
 // The format version this build writes: `1`.
 //
@@ -124,7 +317,7 @@ impl Error for SnapError
 //     println("${snapfile.format_version()}")
 // ```
 pub fn format_version() -> Int []
-    todo("snapshot-nv.snapfile.format_version")
+    1
 
 // A header for a snapshot, with no expression and no redactions.
 //
@@ -135,7 +328,12 @@ pub fn format_version() -> Int []
 //     println(snapfile.header("tests/render_tests.nv", "a_wide_table").assertion)
 // ```
 pub fn header(source: Str, assertion: Str) -> SnapHeader []
-    todo("snapshot-nv.snapfile.header")
+    SnapHeader {
+        version: format_version(),
+        source: source,
+        assertion: assertion,
+        expression: "",
+        redactions: [] }
 
 // The header with the expression text a reader sees.
 //
@@ -147,7 +345,12 @@ pub fn header(source: Str, assertion: Str) -> SnapHeader []
 //     println(snapfile.with_expression(h, "render(t)").expression)
 // ```
 pub fn with_expression(h: SnapHeader, expression: Str) -> SnapHeader []
-    todo("snapshot-nv.snapfile.with_expression")
+    SnapHeader {
+        version: h.version,
+        source: h.source,
+        assertion: h.assertion,
+        expression: expression,
+        redactions: h.redactions }
 
 // The header with the redaction labels recorded.
 //
@@ -160,7 +363,12 @@ pub fn with_expression(h: SnapHeader, expression: Str) -> SnapHeader []
 //     println("${list.len(snapfile.with_redactions(h, ["timestamps"]).redactions)}")
 // ```
 pub fn with_redactions(h: SnapHeader, labels: [Str]) -> SnapHeader []
-    todo("snapshot-nv.snapfile.with_redactions")
+    SnapHeader {
+        version: h.version,
+        source: h.source,
+        assertion: h.assertion,
+        expression: h.expression,
+        redactions: labels }
 
 // The whole file as text: the header, the delimiter, the value.
 //
@@ -172,7 +380,17 @@ pub fn with_redactions(h: SnapHeader, labels: [Str]) -> SnapHeader []
 //     println(snapfile.render(s))
 // ```
 pub fn render(s: SnapStored) -> Str []
-    todo("snapshot-nv.snapfile.render")
+    let h = s.header
+    let labels = "redactions: " + list.join(h.redactions, ", ")
+    let text = str.join([
+        "--- snapshot-nv ${h.version}",
+        "source: ${h.source}",
+        "assertion: ${h.assertion}",
+        "expression: ${h.expression}",
+        labels,
+        "---"],
+        "\n")
+    text + "\n" + s.value
 
 // The same bytes, appended to a caller's buffer.
 //
@@ -187,7 +405,9 @@ pub fn render(s: SnapStored) -> Str []
 //     println("${list.len(snapfile.render_into([], s))}")
 // ```
 pub fn render_into(out: [u8], s: SnapStored) -> [u8] []
-    todo("snapshot-nv.snapfile.render_into")
+    let text = render(s)
+    let more = bytes.to_byte_list(bytes.from_str(text))
+    list.concat(out, more)
 
 // The inverse of `render`, from the file's text.
 //
@@ -204,7 +424,7 @@ pub fn render_into(out: [u8], s: SnapStored) -> [u8] []
 //         Err(e) => println(e.message())
 // ```
 pub fn parse(text: Str) -> Result<SnapStored, SnapError> []
-    todo("snapshot-nv.snapfile.parse")
+    parse_at("", text)
 
 // Where the snapshot for this assertion lives.
 //
@@ -227,7 +447,11 @@ pub fn parse(text: Str) -> Result<SnapStored, SnapError> []
 // ```
 pub fn snapshot_path(c: snappolicy.SnapConfig, source: Str,
                      assertion: Str) -> Result<Str, SnapError> []
-    todo("snapshot-nv.snapfile.snapshot_path")
+    if not name_ok(assertion)
+        Err(SnapBadName(assertion))
+    else
+        Ok(path.join(stored_dir(c, source),
+                     stem_prefix(source) + assertion + c.suffix))
 
 // The `.new` path beside a snapshot path.
 //
@@ -239,7 +463,10 @@ pub fn snapshot_path(c: snappolicy.SnapConfig, source: Str,
 //     println(snapfile.new_path(snappolicy.config(), "tests/snapshots/t__a.snap"))
 // ```
 pub fn new_path(c: snappolicy.SnapConfig, path: Str) -> Str []
-    todo("snapshot-nv.snapfile.new_path")
+    if str.ends_with(path, c.suffix)
+        str.slice(path, 0, str.len(path) - str.len(c.suffix)) + c.new_suffix
+    else
+        path + c.new_suffix
 
 // Whether a path is a rejected snapshot rather than a stored one.
 //
@@ -256,7 +483,7 @@ pub fn new_path(c: snappolicy.SnapConfig, path: Str) -> Str []
 //     println("${rejected}")
 // ```
 pub fn is_rejected(c: snappolicy.SnapConfig, path: Str) -> Bool []
-    todo("snapshot-nv.snapfile.is_rejected")
+    str.ends_with(path, c.new_suffix)
 
 // Read and parse the snapshot at a path.
 //
@@ -273,7 +500,9 @@ pub fn is_rejected(c: snappolicy.SnapConfig, path: Str) -> Bool []
 //         Err(e) => println(e.message())
 // ```
 pub fn read(path: Str) -> Result<SnapStored, SnapError> [fs]
-    todo("snapshot-nv.snapfile.read")
+    match fs.read(path)
+        Some(text) => parse_at(path, text)
+        None       => unreadable(path)
 
 // Write a snapshot to a path, creating the directory if it is absent.
 //
@@ -287,7 +516,11 @@ pub fn read(path: Str) -> Result<SnapStored, SnapError> [fs]
 //         None    => println("written")
 // ```
 pub fn write(path: Str, s: SnapStored) -> ?SnapError [fs]
-    todo("snapshot-nv.snapfile.write")
+    let _ = fs.mkdir_all(dir_of(path))
+    if fs.write(path, render(s))
+        None
+    else
+        Some(SnapUnwritable(path))
 
 // Write the rejected value beside the stored snapshot, and answer where
 // it landed.
@@ -304,7 +537,10 @@ pub fn write(path: Str, s: SnapStored) -> ?SnapError [fs]
 // ```
 pub fn write_rejected(c: snappolicy.SnapConfig, path: Str,
                       s: SnapStored) -> Result<Str, SnapError> [fs]
-    todo("snapshot-nv.snapfile.write_rejected")
+    let rejected = new_path(c, path)
+    match write(rejected, s)
+        Some(e) => Err(e)
+        None    => Ok(rejected)
 
 // Remove the `.new` file beside a snapshot, if there is one.
 //
@@ -322,7 +558,13 @@ pub fn write_rejected(c: snappolicy.SnapConfig, path: Str,
 //         None    => println("cleared")
 // ```
 pub fn clear_rejected(c: snappolicy.SnapConfig, path: Str) -> ?SnapError [fs]
-    todo("snapshot-nv.snapfile.clear_rejected")
+    let rejected = new_path(c, path)
+    if not fs.exists(rejected)
+        None
+    elif fs.delete(rejected)
+        None
+    else
+        Some(SnapUnwritable(rejected))
 
 // Every rejected snapshot under a directory, in sorted order.
 //
@@ -338,7 +580,7 @@ pub fn clear_rejected(c: snappolicy.SnapConfig, path: Str) -> ?SnapError [fs]
 //     println("${list.len(snapfile.rejected_under(snappolicy.config(), "tests"))}")
 // ```
 pub fn rejected_under(c: snappolicy.SnapConfig, dir: Str) -> [Str] [fs]
-    todo("snapshot-nv.snapfile.rejected_under")
+    walk_rejected(c, dir)
 
 // Accept a rejected snapshot: move the `.new` file over the stored one.
 //
@@ -357,7 +599,15 @@ pub fn rejected_under(c: snappolicy.SnapConfig, dir: Str) -> [Str] [fs]
 //         None    => println("accepted")
 // ```
 pub fn accept_rejected(c: snappolicy.SnapConfig, path: Str) -> ?SnapError [fs]
-    todo("snapshot-nv.snapfile.accept_rejected")
+    let rejected = new_path(c, path)
+    if not fs.exists(rejected)
+        Some(SnapMissing(rejected))
+    elif is_stale(path, rejected)
+        Some(SnapStale(path))
+    elif fs.rename(rejected, path)
+        None
+    else
+        Some(SnapUnwritable(path))
 
 // Every stored snapshot under a directory that belongs to this source
 // file.
@@ -375,7 +625,7 @@ pub fn accept_rejected(c: snappolicy.SnapConfig, path: Str) -> ?SnapError [fs]
 //     println("${list.len(snapfile.stored_for(c, "tests/render_tests.nv"))}")
 // ```
 pub fn stored_for(c: snappolicy.SnapConfig, source: Str) -> [Str] [fs]
-    todo("snapshot-nv.snapfile.stored_for")
+    names_under(stored_dir(c, source), stem_prefix(source), c.suffix)
 
 // The stored names a run did not ask for.
 //
@@ -391,7 +641,7 @@ pub fn stored_for(c: snappolicy.SnapConfig, source: Str) -> [Str] [fs]
 //     println("${list.len(snapfile.unused_names(["a", "b"], ["a"]))}")
 // ```
 pub fn unused_names(stored: [Str], used: [Str]) -> [Str] []
-    todo("snapshot-nv.snapfile.unused_names")
+    list.filter(stored, name => not list.contains(used, name))
 
 // The value a stored snapshot holds.
 //
@@ -403,7 +653,7 @@ pub fn unused_names(stored: [Str], used: [Str]) -> [Str] []
 //     println(snapfile.value_of(s))
 // ```
 pub fn value_of(s: SnapStored) -> Str []
-    todo("snapshot-nv.snapfile.value_of")
+    s.value
 
 // Whether an assertion name can become a filename.
 //
@@ -419,4 +669,4 @@ pub fn value_of(s: SnapStored) -> Str []
 //     println("${ok}")
 // ```
 pub fn name_ok(assertion: Str) -> Bool []
-    todo("snapshot-nv.snapfile.name_ok")
+    not str.is_empty(assertion) and not str.contains(assertion, "/")

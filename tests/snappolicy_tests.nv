@@ -1,9 +1,5 @@
 // snappolicy_tests.nv — the four modes, and which way each one errs.
 //
-// RED ON PURPOSE: every body under `src/` is a `todo()`, so every
-// assertion here reaches `not implemented: snapshot-nv.<module>.<fn>`.
-// That is the expected result until the bodies land.
-//
 // THE ASSERTIONS THAT MATTER ARE THE DEFAULTS.  A snapshot library
 // whose default silently rewrote the file it was comparing against
 // would make every test pass, which is the one failure mode that is
@@ -22,10 +18,10 @@ fn test_the_default_never_overwrites_a_stored_snapshot() [io]
     test.assert(snappolicy.update_name(c.update) == "new")
 
     test.case("which does not overwrite")
-    test.assert(snappolicy.overwrites(c.update) == false)
+    test.assert(not snappolicy.overwrites(c.update))
 
     test.case("does not record a missing snapshot")
-    test.assert(snappolicy.records_when_missing(c.update) == false)
+    test.assert(not snappolicy.records_when_missing(c.update))
 
     test.case("and does leave the evidence beside it")
     test.assert(snappolicy.leaves_rejected(c.update))
@@ -33,19 +29,19 @@ fn test_the_default_never_overwrites_a_stored_snapshot() [io]
 @test
 fn test_each_mode_writes_exactly_what_its_name_says() [io]
     test.case("never writes nothing at all")
-    test.assert(snappolicy.overwrites(SnapNever) == false)
-    test.assert(snappolicy.records_when_missing(SnapNever) == false)
-    test.assert(snappolicy.leaves_rejected(SnapNever) == false)
+    test.assert(not snappolicy.overwrites(SnapNever))
+    test.assert(not snappolicy.records_when_missing(SnapNever))
+    test.assert(not snappolicy.leaves_rejected(SnapNever))
 
     test.case("auto records a missing snapshot and rejects a changed one")
     test.assert(snappolicy.records_when_missing(SnapAuto))
-    test.assert(snappolicy.overwrites(SnapAuto) == false)
+    test.assert(not snappolicy.overwrites(SnapAuto))
     test.assert(snappolicy.leaves_rejected(SnapAuto))
 
     test.case("always overwrites, and then has nothing to reject")
     test.assert(snappolicy.overwrites(SnapAlways))
     test.assert(snappolicy.records_when_missing(SnapAlways))
-    test.assert(snappolicy.leaves_rejected(SnapAlways) == false)
+    test.assert(not snappolicy.leaves_rejected(SnapAlways))
 
 @test
 fn test_the_configuration_defaults_are_the_conventions_a_reader_knows() [io]
@@ -64,7 +60,7 @@ fn test_the_configuration_defaults_are_the_conventions_a_reader_knows() [io]
     test.assert(c.max_diff_lines > 0)
 
     test.case("and the unused check is off, because only a runner can do it")
-    test.assert(c.require_all_used == false)
+    test.assert(not c.require_all_used)
 
 @test
 fn test_a_configuration_is_built_one_field_at_a_time() [io]

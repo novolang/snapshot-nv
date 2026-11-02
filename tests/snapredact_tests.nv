@@ -1,8 +1,5 @@
 // snapredact_tests.nv — what a redaction must NOT eat.
 //
-// RED ON PURPOSE: every body under `src/` is a `todo()`, so every
-// assertion here reaches `not implemented: snapshot-nv.<module>.<fn>`.
-//
 // THE FALSE POSITIVES ARE THE SUBJECT.  A redaction that matches too
 // loosely eats the value the test is actually about, and the snapshot
 // then passes forever no matter what the code does — the one failure
@@ -61,7 +58,7 @@ fn test_a_path_prefix_is_a_prefix_and_not_a_guess() [io]
     test.case("the temporary root is replaced wherever it appears")
     let line = "wrote /tmp/novo-a2f4k9/out.json\n"
     test.assert(str.contains(snapredact.apply_all([r], line), "/out.json"))
-    test.assert(str.contains(snapredact.apply_all([r], line), "novo-a2f4k9") == false)
+    test.assert(not str.contains(snapredact.apply_all([r], line), "novo-a2f4k9"))
 
     test.case("and another path is untouched")
     test.assert(str.contains(snapredact.apply_all([r], "wrote /etc/hosts\n"), "/etc/hosts"))
@@ -75,7 +72,7 @@ fn test_a_field_redaction_keeps_the_key_so_the_shape_stays_under_test() [io]
     test.assert(str.contains(out, "created:"))
 
     test.case("the value does not")
-    test.assert(str.contains(out, "2026") == false)
+    test.assert(not str.contains(out, "2026"))
 
     test.case("and another field is untouched")
     test.assert(str.contains(out, "name: a"))
@@ -86,7 +83,7 @@ fn test_a_json_member_is_reached_at_any_depth_and_the_output_is_still_json() [io
     let doc = "{\"items\":[{\"id\":\"abc\",\"name\":\"a\"}]}"
 
     test.case("a member inside an array inside an object is reached")
-    test.assert(str.contains(snapredact.apply_all([r], doc), "abc") == false)
+    test.assert(not str.contains(snapredact.apply_all([r], doc), "abc"))
 
     test.case("and text that is not JSON is left exactly as it was")
     test.assert(snapredact.apply_all([r], "not json at all\n") == "not json at all\n")
@@ -98,7 +95,7 @@ fn test_the_regex_escape_hatch_refuses_quietly_and_reports_loudly() [io]
                 == "run 7\n")
 
     test.case("and pattern_ok is where a person is told")
-    test.assert(snapredact.pattern_ok("run [0-9") == false)
+    test.assert(not snapredact.pattern_ok("run [0-9"))
     test.assert(snapredact.pattern_ok("run [0-9]+"))
 
     test.case("a valid one replaces")
@@ -109,8 +106,8 @@ fn test_the_regex_escape_hatch_refuses_quietly_and_reports_loudly() [io]
 @test
 fn test_the_whitespace_redactions_are_opt_in() [io]
     test.case("line endings are normalised only when asked")
-    test.assert(str.contains(snapredact.apply_all([snapredact.unix_newlines()], "a\r\nb\r\n"),
-                             "\r") == false)
+    test.assert(not str.contains(snapredact.apply_all([snapredact.unix_newlines()], "a\r\nb\r\n"),
+                             "\r"))
 
     test.case("trailing space is dropped only when asked")
     test.assert(snapredact.apply_all([snapredact.trailing_space()], "a   \nb\n") == "a\nb\n")
@@ -124,7 +121,7 @@ fn test_redactions_run_in_the_order_the_caller_wrote() [io]
     let out = snapredact.apply_all([first, snapredact.path_prefix("/TMP")], "/tmp/x\n")
 
     test.case("the second redaction saw the first one's output")
-    test.assert(str.contains(out, "/tmp") == false)
+    test.assert(not str.contains(out, "/tmp"))
 
 @test
 fn test_a_caller_writes_a_redaction_the_way_the_package_does() [io]

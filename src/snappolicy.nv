@@ -1,7 +1,5 @@
 // snappolicy.nv — what a mismatch is allowed to do, as a value.
 //
-// Every body here is a `todo()`; the signatures are the design.
-//
 // THE POLICY IS AN ARGUMENT, NOT AN ENVIRONMENT VARIABLE.  insta reads
 // `INSTA_UPDATE` from the process environment inside the macro that
 // does the assertion, and syrupy reads `--snapshot-update` off the
@@ -91,7 +89,13 @@ pub struct SnapConfig
 //     println(snappolicy.config().dir)
 // ```
 pub fn config() -> SnapConfig []
-    todo("snapshot-nv.snappolicy.config")
+    SnapConfig {
+        update: SnapNew,
+        dir: "snapshots",
+        suffix: ".snap",
+        new_suffix: ".snap.new",
+        max_diff_lines: 120,
+        require_all_used: false }
 
 // The configuration with a different update mode.
 //
@@ -103,7 +107,13 @@ pub fn config() -> SnapConfig []
 //     println(snappolicy.update_name(c.update))
 // ```
 pub fn with_update(c: SnapConfig, u: SnapUpdate) -> SnapConfig []
-    todo("snapshot-nv.snappolicy.with_update")
+    SnapConfig {
+        update: u,
+        dir: c.dir,
+        suffix: c.suffix,
+        new_suffix: c.new_suffix,
+        max_diff_lines: c.max_diff_lines,
+        require_all_used: c.require_all_used }
 
 // The configuration with a different snapshot directory.
 //
@@ -114,7 +124,13 @@ pub fn with_update(c: SnapConfig, u: SnapUpdate) -> SnapConfig []
 //     println(snappolicy.with_dir(snappolicy.config(), "__snapshots__").dir)
 // ```
 pub fn with_dir(c: SnapConfig, dir: Str) -> SnapConfig []
-    todo("snapshot-nv.snappolicy.with_dir")
+    SnapConfig {
+        update: c.update,
+        dir: dir,
+        suffix: c.suffix,
+        new_suffix: c.new_suffix,
+        max_diff_lines: c.max_diff_lines,
+        require_all_used: c.require_all_used }
 
 // The configuration with a different diff ceiling.
 //
@@ -125,7 +141,13 @@ pub fn with_dir(c: SnapConfig, dir: Str) -> SnapConfig []
 //     println("${snappolicy.with_max_diff_lines(snappolicy.config(), 40).max_diff_lines}")
 // ```
 pub fn with_max_diff_lines(c: SnapConfig, lines: Int) -> SnapConfig []
-    todo("snapshot-nv.snappolicy.with_max_diff_lines")
+    SnapConfig {
+        update: c.update,
+        dir: c.dir,
+        suffix: c.suffix,
+        new_suffix: c.new_suffix,
+        max_diff_lines: lines,
+        require_all_used: c.require_all_used }
 
 // The configuration with the unused-snapshot check turned on.
 //
@@ -137,7 +159,13 @@ pub fn with_max_diff_lines(c: SnapConfig, lines: Int) -> SnapConfig []
 //     println("${c.require_all_used}")
 // ```
 pub fn with_require_all_used(c: SnapConfig, required: Bool) -> SnapConfig []
-    todo("snapshot-nv.snappolicy.with_require_all_used")
+    SnapConfig {
+        update: c.update,
+        dir: c.dir,
+        suffix: c.suffix,
+        new_suffix: c.new_suffix,
+        max_diff_lines: c.max_diff_lines,
+        require_all_used: required }
 
 // The update mode this environment asks for.
 //
@@ -157,7 +185,10 @@ pub fn with_require_all_used(c: SnapConfig, required: Bool) -> SnapConfig []
 //     println(snappolicy.update_name(snappolicy.policy_from_env()))
 // ```
 pub fn policy_from_env() -> SnapUpdate [io]
-    todo("snapshot-nv.snappolicy.policy_from_env")
+    let raw = env.get(env_name()) ?? ""
+    match policy_named(raw)
+        Some(u) => u
+        None    => config().update
 
 // The mode a name stands for: `never`, `new`, `auto`, `always`.
 //
@@ -173,7 +204,12 @@ pub fn policy_from_env() -> SnapUpdate [io]
 //         None    => println("not a mode")
 // ```
 pub fn policy_named(name: Str) -> ?SnapUpdate []
-    todo("snapshot-nv.snappolicy.policy_named")
+    match name
+        "never"  => Some(SnapNever)
+        "new"    => Some(SnapNew)
+        "auto"   => Some(SnapAuto)
+        "always" => Some(SnapAlways)
+        _        => None
 
 // The name of a mode, the inverse of `policy_named`.
 //
@@ -184,7 +220,11 @@ pub fn policy_named(name: Str) -> ?SnapUpdate []
 //     println(snappolicy.update_name(SnapAuto))
 // ```
 pub fn update_name(u: SnapUpdate) -> Str []
-    todo("snapshot-nv.snappolicy.update_name")
+    match u
+        SnapNever  => "never"
+        SnapNew    => "new"
+        SnapAuto   => "auto"
+        SnapAlways => "always"
 
 // The environment variable this package reads: `UPDATE_SNAPSHOTS`.
 //
@@ -199,7 +239,7 @@ pub fn update_name(u: SnapUpdate) -> Str []
 //     println(snappolicy.env_name())
 // ```
 pub fn env_name() -> Str []
-    todo("snapshot-nv.snappolicy.env_name")
+    "UPDATE_SNAPSHOTS"
 
 // Whether this mode replaces a stored snapshot that differs.
 //
@@ -213,7 +253,11 @@ pub fn env_name() -> Str []
 //     println("${snappolicy.overwrites(SnapNew)}")
 // ```
 pub fn overwrites(u: SnapUpdate) -> Bool []
-    todo("snapshot-nv.snappolicy.overwrites")
+    match u
+        SnapNever  => false
+        SnapNew    => false
+        SnapAuto   => false
+        SnapAlways => true
 
 // Whether this mode writes the snapshot when there is none.
 //
@@ -226,7 +270,11 @@ pub fn overwrites(u: SnapUpdate) -> Bool []
 //     println("${snappolicy.records_when_missing(SnapAuto)}")
 // ```
 pub fn records_when_missing(u: SnapUpdate) -> Bool []
-    todo("snapshot-nv.snappolicy.records_when_missing")
+    match u
+        SnapNever  => false
+        SnapNew    => false
+        SnapAuto   => true
+        SnapAlways => true
 
 // Whether this mode leaves a `.new` file beside a snapshot that
 // differs.
@@ -242,4 +290,8 @@ pub fn records_when_missing(u: SnapUpdate) -> Bool []
 //     println("${snappolicy.leaves_rejected(SnapNew)}")
 // ```
 pub fn leaves_rejected(u: SnapUpdate) -> Bool []
-    todo("snapshot-nv.snappolicy.leaves_rejected")
+    match u
+        SnapNever  => false
+        SnapNew    => true
+        SnapAuto   => true
+        SnapAlways => false

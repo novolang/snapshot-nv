@@ -1,8 +1,6 @@
 // snapredact.nv — the volatile fields, replaced before they are
 // stored.
 //
-// Every body here is a `todo()`; the signatures are the design.
-//
 // A SNAPSHOT OF ANYTHING REAL CONTAINS SOMETHING THAT CHANGES.  A
 // timestamp, a generated identifier, an absolute path with somebody's
 // home directory in it, a duration in milliseconds.  Left alone, the
@@ -44,6 +42,105 @@ pub struct SnapRedaction
     // and not only textual.
     apply: fn(Str) -> Str
 
+// ── private helpers ──────────────────────────────────────────────────
+//
+// One named function per replacement, plus the two shapes the
+// replacements share: a pattern and what it replaces, and a value
+// rewritten line by line.  Private because a caller gets one of these
+// through a constructor that has already given it a label.
+
+// A value rewritten line by line, with the newlines put back exactly as
+// they were — including the empty last line a value ending in a newline
+// splits into, which is what keeps the trailing-newline rule of the
+// format true through a per-line redaction.
+fn per_line(value: Str, f: fn(Str) -> Str) -> Str []
+    let lines = str.split_lines(value)
+    list.join([f(line) for line in lines], "\n")
+
+// An RFC 3339 instant, and nothing looser: the `T` and the offset are
+// what separate it from a calendar date a test is actually about.
+fn timestamp_pattern() -> Str []
+    "[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?(Z|[+-][0-9]{2}:[0-9]{2})"
+
+// A canonical UUID: eight, four, four, four and twelve lower-case hex
+// digits with the hyphens.  The hyphens are why a bare hex run of the
+// same length is not one.
+fn uuid_pattern() -> Str []
+    "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
+
+// A hexadecimal run of at least `min_len` characters.
+fn hex_pattern(min_len: Int) -> Str []
+    "[0-9a-fA-F]{" + str.from_int(min_len) + ",}"
+
+fn redact_timestamps(value: Str) -> Str []
+    regex.replace(timestamp_pattern(), placeholder(), value)
+
+fn redact_uuids(value: Str) -> Str []
+    regex.replace(uuid_pattern(), placeholder(), value)
+
+fn redact_hex(min_len: Int, value: Str) -> Str []
+    regex.replace(hex_pattern(min_len), placeholder(), value)
+
+// A prefix is a literal, so this is a plain replacement and not a
+// pattern: a checkout path with a `.` or a `+` in it is not a pattern by
+// accident, and the answer for a caller who wants one is `matching`.
+fn redact_prefix(prefix: Str, value: Str) -> Str []
+    str.replace(value, prefix, "[root]")
+
+// The value after a `key:` on a line whose key matches, the key kept so
+// the shape of the output is still under test.
+fn field_line(key: Str, line: Str) -> Str []
+    if str.starts_with(line, key)
+        key + " " + placeholder()
+    else
+        line
+
+fn redact_field(name: Str, value: Str) -> Str []
+    per_line(value, line => field_line(name + ":", line))
+
+// One member of a JSON object, by key: the placeholder when the key is
+// the one being redacted, the walk otherwise.
+fn json_member_of(name: Str, key: Str, v: json.JsonValueH) -> Any []
+    let inner = json.get(v, key)!
+    if key == name
+        json.string(placeholder())
+    else
+        json_walk(name, inner)
+
+// The document rebuilt with every member named `name` replaced, at any
+// depth: an object becomes an object with the same keys in the same
+// order, an array an array with the same elements, and anything else
+// itself.
+fn json_walk(name: Str, v: json.JsonValueH) -> Any []
+    let kind = json.type_of(v)
+    if kind == "object"
+        let pairs: [(Str, Any)] = [(k, json_member_of(name, k, v)) for k in json.keys(v)]
+        json.object(pairs)
+    else if kind == "array"
+        let items: [Any] = [json_walk(name, e) for e in json.to_list(v) ?? []]
+        json.array(items)
+    else
+        v
+
+fn redact_json_member(name: Str, value: Str) -> Str []
+    match json.parse(value)
+        None    => value
+        Some(v) => json.stringify(json_walk(name, v))
+
+// An invalid pattern replaces nothing, and does not raise: a snapshot
+// assertion is not where a person should learn their pattern is wrong.
+fn redact_pattern(pattern: Str, value: Str) -> Str []
+    if regex.error(pattern) == None
+        regex.replace(pattern, placeholder(), value)
+    else
+        value
+
+fn redact_newlines(value: Str) -> Str []
+    str.replace(value, "\r\n", "\n")
+
+fn redact_trailing_space(value: Str) -> Str []
+    per_line(value, line => str.trim_end(line))
+
 // The text a redaction leaves behind: `[redacted]`.
 //
 // One spelling, published, because two redactions that write different
@@ -56,7 +153,7 @@ pub struct SnapRedaction
 //     println(snapredact.placeholder())
 // ```
 pub fn placeholder() -> Str []
-    todo("snapshot-nv.snapredact.placeholder")
+    "[redacted]"
 
 // A redaction from a label and a named function.
 //
@@ -73,7 +170,7 @@ pub fn placeholder() -> Str []
 //     println(snapredact.redaction("trailing-blank", drop_trailing_blank).label)
 // ```
 pub fn redaction(label: Str, apply: fn(Str) -> Str) -> SnapRedaction []
-    todo("snapshot-nv.snapredact.redaction")
+    SnapRedaction { label: label, apply: apply }
 
 // Every redaction applied, in order.
 //
@@ -88,7 +185,10 @@ pub fn redaction(label: Str, apply: fn(Str) -> Str) -> SnapRedaction []
 //     println(snapredact.apply_all([], "created: 2026-09-11T10:00:00Z\n"))
 // ```
 pub fn apply_all(rs: [SnapRedaction], value: Str) -> Str []
-    todo("snapshot-nv.snapredact.apply_all")
+    var out = value
+    for r in rs
+        out = r.apply(out)
+    out
 
 // The labels of a list of redactions, for the header.
 //
@@ -100,7 +200,7 @@ pub fn apply_all(rs: [SnapRedaction], value: Str) -> Str []
 //     println("${list.len(snapredact.labels([snapredact.timestamps()]))}")
 // ```
 pub fn labels(rs: [SnapRedaction]) -> [Str] []
-    todo("snapshot-nv.snapredact.labels")
+    [r.label for r in rs]
 
 // Replace anything that looks like an RFC 3339 timestamp.
 //
@@ -115,7 +215,7 @@ pub fn labels(rs: [SnapRedaction]) -> [Str] []
 //     println(snapredact.timestamps().label)
 // ```
 pub fn timestamps() -> SnapRedaction []
-    todo("snapshot-nv.snapredact.timestamps")
+    SnapRedaction { label: "timestamps", apply: value => redact_timestamps(value) }
 
 // Replace anything that looks like a canonical UUID.
 //
@@ -130,7 +230,7 @@ pub fn timestamps() -> SnapRedaction []
 //     println(snapredact.uuids().label)
 // ```
 pub fn uuids() -> SnapRedaction []
-    todo("snapshot-nv.snapredact.uuids")
+    SnapRedaction { label: "uuids", apply: value => redact_uuids(value) }
 
 // Replace hexadecimal runs of at least `min_len` characters.
 //
@@ -146,7 +246,7 @@ pub fn uuids() -> SnapRedaction []
 //     println(snapredact.hex_runs(40).label)
 // ```
 pub fn hex_runs(min_len: Int) -> SnapRedaction []
-    todo("snapshot-nv.snapredact.hex_runs")
+    SnapRedaction { label: "hex", apply: value => redact_hex(min_len, value) }
 
 // Replace a prefix wherever it appears, with `[root]`.
 //
@@ -162,7 +262,7 @@ pub fn hex_runs(min_len: Int) -> SnapRedaction []
 //     println(snapredact.path_prefix("/tmp/novo-a2f4k9").label)
 // ```
 pub fn path_prefix(prefix: Str) -> SnapRedaction []
-    todo("snapshot-nv.snapredact.path_prefix")
+    SnapRedaction { label: "paths", apply: value => redact_prefix(prefix, value) }
 
 // Replace the value after a `key:` on any line whose key matches.
 //
@@ -177,7 +277,7 @@ pub fn path_prefix(prefix: Str) -> SnapRedaction []
 //     println(snapredact.field("created").label)
 // ```
 pub fn field(name: Str) -> SnapRedaction []
-    todo("snapshot-nv.snapredact.field")
+    SnapRedaction { label: "field:" + name, apply: value => redact_field(name, value) }
 
 // Replace the value of a JSON member with the placeholder, wherever it
 // appears at any depth.
@@ -195,7 +295,7 @@ pub fn field(name: Str) -> SnapRedaction []
 //     println(snapredact.json_member("id").label)
 // ```
 pub fn json_member(name: Str) -> SnapRedaction []
-    todo("snapshot-nv.snapredact.json_member")
+    SnapRedaction { label: "json:" + name, apply: value => redact_json_member(name, value) }
 
 // Replace every match of a regular expression.
 //
@@ -215,7 +315,7 @@ pub fn json_member(name: Str) -> SnapRedaction []
 //     println(snapredact.matching("run [0-9]+").label)
 // ```
 pub fn matching(pattern: Str) -> SnapRedaction []
-    todo("snapshot-nv.snapredact.matching")
+    SnapRedaction { label: "regex", apply: value => redact_pattern(pattern, value) }
 
 // Whether a pattern compiles, so a caller can be told where they wrote
 // it.
@@ -228,7 +328,7 @@ pub fn matching(pattern: Str) -> SnapRedaction []
 //     println("${ok}")
 // ```
 pub fn pattern_ok(pattern: Str) -> Bool []
-    todo("snapshot-nv.snapredact.pattern_ok")
+    regex.error(pattern) == None
 
 // Normalise line endings to `\n` before anything else looks at the
 // value.
@@ -245,7 +345,7 @@ pub fn pattern_ok(pattern: Str) -> Bool []
 //     println(snapredact.unix_newlines().label)
 // ```
 pub fn unix_newlines() -> SnapRedaction []
-    todo("snapshot-nv.snapredact.unix_newlines")
+    SnapRedaction { label: "newlines", apply: value => redact_newlines(value) }
 
 // Drop trailing spaces from every line.
 //
@@ -260,7 +360,7 @@ pub fn unix_newlines() -> SnapRedaction []
 //     println(snapredact.trailing_space().label)
 // ```
 pub fn trailing_space() -> SnapRedaction []
-    todo("snapshot-nv.snapredact.trailing_space")
+    SnapRedaction { label: "trailing-space", apply: value => redact_trailing_space(value) }
 
 // The four redactions a tool's command-line output usually needs:
 // timestamps, uuids, 40-character hex runs and trailing space.
@@ -276,4 +376,4 @@ pub fn trailing_space() -> SnapRedaction []
 //     println("${list.len(snapredact.cli_defaults())}")
 // ```
 pub fn cli_defaults() -> [SnapRedaction] []
-    todo("snapshot-nv.snapredact.cli_defaults")
+    [timestamps(), uuids(), hex_runs(40), trailing_space()]

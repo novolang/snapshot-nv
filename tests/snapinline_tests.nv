@@ -1,8 +1,5 @@
 // snapinline_tests.nv — the indentation, which is the whole difficulty.
 //
-// RED ON PURPOSE: every body under `src/` is a `todo()`, so every
-// assertion here reaches `not implemented: snapshot-nv.<module>.<fn>`.
-//
 // AN INLINE SNAPSHOT IS INDENTED TO THE CODE AROUND IT AND THE VALUE IS
 // NOT.  Every inline-snapshot implementation's bug reports are about
 // that one mismatch, so `normalise_inline` and `render_literal` are
@@ -71,9 +68,9 @@ fn test_the_inline_comparison_is_pure_and_normalises_both_sides() [io]
                                          "hello\n"))
 
     test.case("and a real difference is still a difference")
-    test.assert(snapinline.agrees_inline(r,
+    test.assert(not snapinline.agrees_inline(r,
                                          snapinline.inline("t.nv", 1, "\n    hello\n"),
-                                         "hallo\n") == false)
+                                         "hallo\n"))
 
 @test
 fn test_an_inline_check_answers_the_same_verdict_as_a_stored_one() [io, fs]
@@ -136,12 +133,12 @@ fn test_a_run_that_matched_clears_what_it_left_before() [io, fs]
 
     test.case("recording an edit appends rather than replacing")
     let e = SnapPendingEdit { line: 42, expected: "hello", actual: "hallo", indent: 4 }
-    match snapinline.record_pending(c, "target/snapshot-nv-probe.nv", e)
+    match snapinline.record_pending(c, "_novo/snapshot-nv-probe.nv", e)
         Some(err) => test.assert(str.len(err.message()) > 0)
         None      => test.assert(true)
 
     test.case("and clearing one that is not there is not an error")
-    match snapinline.clear_pending(c, "target/snapshot-nv-nothing.nv")
+    match snapinline.clear_pending(c, "_novo/snapshot-nv-nothing.nv")
         Some(err) => test.assert(str.len(err.message()) > 0)
         None      => test.assert(true)
 

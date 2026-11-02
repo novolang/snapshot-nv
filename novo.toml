@@ -1,15 +1,10 @@
 [package]
 name        = "snapshot-nv"
-version     = "0.0.3"
-description = "Snapshot assertions for novo-lang: the stored file is a two-line-delimited header and then the value verbatim, the comparison ANSWERS a SnapVerdict instead of raising, and the update policy is a value the runner passes rather than an environment variable read inside the assertion — so one run can compare one suite and accept another, and the library can be tested by the library.  Mismatches render through diff-nv and land in a `.new` file beside the snapshot.  Interface only — every body is a todo()."
+version     = "0.1.0"
+description = "Snapshot assertions for novo-lang: the stored file is a two-line-delimited header and then the value verbatim, the comparison ANSWERS a SnapVerdict instead of raising, and the update policy is a value the runner passes rather than an environment variable read inside the assertion — so one run can compare one suite and accept another, and the library can be tested by the library.  Mismatches render through diff-nv and land in a `.new` file beside the snapshot."
 license     = "Apache-2.0"
 
-# An INTERFACE release: every `pub fn` body is a `todo()`, so the
-# signatures and the effect rows are published and nothing is
-# implemented.  `novo pkg publish` recognises the shape and requires
-# both the draft stability and the 0.0.x version; the first
-# implementation is the 0.1.0 published over it.
-stability   = "draft"
+stability   = "experimental"
 
 # `host`, and the row that matters is the one that is NOT here.
 #
@@ -31,7 +26,7 @@ category    = "testing"
 tags        = ["snapshot", "insta", "syrupy", "approval-testing", "golden", "testing", "diff"]
 repository  = "https://github.com/novolang/snapshot-nv"
 maintainers = ["novo-lang"]
-novo        = ">= 0.8.9"
+novo        = ">= 0.20.2"
 
 # A library: no `main`, so `novo pkg build` type-checks and
 # effect-checks every module under `src/` and writes no binary.
@@ -49,7 +44,8 @@ novo        = ">= 0.8.9"
 # and a diff is arithmetic over text, so nothing here belongs in
 # diff-nv and nothing there needs a file.
 #
-# diff-nv is itself an interface release today, so this dependency is
-# an interface depending on an interface — which resolves, downloads
-# and builds exactly like any other, and panics at the first call.
+# diff-nv 0.1.0 resolves from the registry with bodies in all five of
+# its modules, so the three calls above answer rather than panic, and
+# `snapassert.render_diff` is exercised by this package's own suites
+# rather than only type-checked.
 diff-nv = "^0.1.0"

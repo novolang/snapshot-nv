@@ -1,9 +1,6 @@
 // snapassert_tests.nv — the verdict, which is what makes this file
 // possible at all.
 //
-// RED ON PURPOSE: every body under `src/` is a `todo()`, so every
-// assertion here reaches `not implemented: snapshot-nv.<module>.<fn>`.
-//
 // THIS FILE IS THE ARGUMENT FOR THE DESIGN.  Every case below is a
 // statement about what a comparison ANSWERED — "a mismatch under
 // SnapNever writes nothing", "an absent snapshot is not the same
@@ -14,6 +11,8 @@
 use std.test
 use std.str
 use std.list
+use std.fs
+use snapfile
 use snappolicy
 use snapassert
 use snapredact
@@ -56,10 +55,10 @@ fn test_recording_a_first_snapshot_is_a_pass_and_a_mismatch_is_not() [io]
     test.assert(snapassert.passed(SnapRecorded("tests/snapshots/t__a.snap")))
 
     test.case("absent does not")
-    test.assert(snapassert.passed(SnapAbsent("tests/snapshots/t__a.snap")) == false)
+    test.assert(not snapassert.passed(SnapAbsent("tests/snapshots/t__a.snap")))
 
     test.case("differed does not")
-    test.assert(snapassert.passed(SnapDiffered("a", "b", "")) == false)
+    test.assert(not snapassert.passed(SnapDiffered("a", "b", "")))
 
 @test
 fn test_the_comparison_rule_is_one_pure_function() [io]
@@ -69,7 +68,7 @@ fn test_the_comparison_rule_is_one_pure_function() [io]
     test.assert(snapassert.agrees(r, "hello\n", "hello\n"))
 
     test.case("a trailing newline is a difference")
-    test.assert(snapassert.agrees(r, "hello\n", "hello") == false)
+    test.assert(not snapassert.agrees(r, "hello\n", "hello"))
 
     test.case("and a redaction is applied to the actual value before the compare")
     let redacted = snapassert.with_redactions(r, [snapredact.timestamps()])
@@ -112,6 +111,17 @@ fn test_a_verdict_names_itself_and_its_path() [io]
     test.assert(snapassert.path_of(SnapDiffered("p", "q", "")) == "p")
 
 @test
+fn test_an_absent_snapshot_names_its_path_and_how_to_record_it() [io]
+    let text = snapassert.message(SnapAbsent("tests/snapshots/t__a.snap"))
+
+    test.case("the path is in it")
+    test.assert(str.contains(text, "no snapshot at `tests/snapshots/t__a.snap`"))
+
+    test.case("and so are the way to record it and the `.new` file")
+    test.assert(str.contains(text, "=auto to record it"))
+    test.assert(str.contains(text, "a `.new` file beside it"))
+
+@test
 fn test_the_failure_message_leads_with_the_files_and_not_the_diff() [io]
     // The reader's first question is which file, the second is how to
     // accept it.  A message that led with the diff buried both.
@@ -141,7 +151,7 @@ fn test_the_diff_is_rendered_through_diff_nv_and_cut() [io]
     test.assert(snapassert.render_diff(c, "a\n", "a\n") == "")
 
     test.case("and the one-line summary is one line")
-    test.assert(str.contains(snapassert.diff_summary("a\nb\n", "a\nc\n"), "\n") == false)
+    test.assert(not str.contains(snapassert.diff_summary("a\nb\n", "a\nc\n"), "\n"))
 
 @test
 fn test_a_runner_can_aggregate_because_nothing_raised() [io]
@@ -159,5 +169,17 @@ fn test_a_runner_can_aggregate_because_nothing_raised() [io]
 fn test_the_reporting_wrapper_is_the_only_io_in_the_module() [io, fs]
     // `assert_snapshot` is the nine lines over `check` that a test
     // writes; everything it decides, `check` already decided.
-    test.case("it runs against a snapshot that is not there")
-    snapassert.assert_snapshot(request_at(SnapNever), "hello\n")
+    // A failure ends the test, so the wrapper is run on the two answers
+    // that pass: a snapshot recorded under `SnapAuto` and the same
+    // snapshot found again.  The source is a path under /tmp, so the
+    // snapshot lands there and not in this package.
+    let r = snapassert.with_config(
+        snapassert.request("/tmp/snapshot-nv-wrapper/render_tests.nv", "a_wide_table"),
+        snappolicy.with_update(snappolicy.config(), SnapAuto))
+    test.case("it records a snapshot that is not there")
+    snapassert.assert_snapshot(r, "hello\n")
+    test.case("and finds it again")
+    snapassert.assert_snapshot(r, "hello\n")
+    match snapfile.snapshot_path(r.config, r.source, r.assertion)
+        Ok(p)  => test.assert(fs.delete(p))
+        Err(_) => test.fail("the request names a snapshot")

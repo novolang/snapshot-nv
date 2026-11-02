@@ -10,12 +10,6 @@ package brings them to novo-lang, over
 [diff-nv](https://novo-lang.org/packages/diff-nv) for the rendering of a
 mismatch.
 
-**Status: NOT IMPLEMENTED — interface only.** Every function is declared
-with its full signature, but every body is a `todo()` that panics when
-called. The package is published so its design can be reviewed and
-depended on before it is implemented. Version 0.1.0 will be the first
-working release.
-
 ## What it is
 
 A **snapshot** is a file holding one recorded value. It lives in a
@@ -103,10 +97,8 @@ fn test_the_receipt_renders() [fs, io]
     snapassert.assert_snapshot(r, rendered_receipt())
 ```
 
-Build and test with `novo pkg build` and `novo test`. Today `novo test`
-fails on purpose: every test reaches a
-`not implemented: snapshot-nv.<module>.<fn>` panic. The tests are the
-specification the implementation will have to satisfy.
+Build and test with `novo pkg build` and `novo test`. The suites under
+`tests/` are the specification the bodies were fitted to.
 
 ## What the package contains
 
@@ -280,8 +272,8 @@ check.
   difference between two texts. It is the only dependency, and the
   relationship is one-directional: a snapshot is text and a difference
   is arithmetic over text, so nothing here belongs there and nothing
-  there needs a file. It is an interface release too, so this is an
-  interface depending on an interface.
+  there needs a file. It is implemented, and the rendering here is
+  exercised by this package's own suites rather than only type-checked.
 - [matchers-nv](https://novo-lang.org/packages/matchers-nv) judges a
   value against a named property and says what it wanted. Take it when
   the test is about one property of the value; take this package when
@@ -299,11 +291,12 @@ check.
 ## Tests
 
 ```bash
-novo test --isolate tests/snapinline_tests.nv   # 13 tests: the literal, the round trip, the pending file
-novo test --isolate tests/snapfile_tests.nv     # 12 tests: the format, the paths and the refusals
-novo test --isolate tests/snapredact_tests.nv   # 11 tests: the named redactions and the order
-novo test --isolate tests/snapassert_tests.nv   # 10 tests: the verdicts and the comparison
-novo test --isolate tests/snappolicy_tests.nv   #  7 tests: the four modes and the predicates
+novo test --isolate tests/snapinline_tests.nv         # 13 tests: the literal, the round trip, the pending file
+novo test --isolate tests/snapfile_tests.nv           # 12 tests: the format, the paths and the refusals
+novo test --isolate tests/snapredact_tests.nv         # 11 tests: the named redactions and the order
+novo test --isolate tests/snapassert_tests.nv         # 10 tests: the verdicts and the comparison
+novo test --isolate tests/snappolicy_tests.nv         #  7 tests: the four modes and the predicates
+novo test --isolate tests/snapshot_nv_edge_tests.nv   #  9 tests: the diff, the rename, the header, the policy matrix
 ```
 
 The behaviour asserted is insta's, for the file format, the update modes
@@ -320,36 +313,20 @@ whose final newline must survive. `snapredact_tests.nv` asserts that the
 named redactions replace what they claim and that `apply_all` is ordered.
 `snapinline_tests.nv` asserts the round trip: normalise what
 `render_literal` produced and the value comes back.
+`snapshot_nv_edge_tests.nv` is the one suite that holds files: it pins
+the three diff cases over one pair (nothing changed, one thing changed,
+and one gone with one arrived so that no count sees it), a rename as a
+delete and an add, that nothing in a header and no attribute of the
+source file takes part in the comparison, that an empty value and a
+later reading of an unchanged tree are both clean, the four update
+modes on real files, and the pending-edit file end to end.
 
-The tests compile today and fail at run, each on the
-`not implemented: snapshot-nv.<module>.<fn>` panic that is its body.
-That is the expected state of an interface release. They turn green one
-at a time as bodies land.
-
-## Implementation status
-
-| Item | Implemented |
-| --- | --- |
-| `snappolicy.config`, `.with_update`, `.with_dir`, `.with_max_diff_lines`, `.with_require_all_used` | no |
-| `snappolicy.policy_from_env`, `.policy_named`, `.update_name`, `.env_name` | no |
-| `snappolicy.overwrites`, `.records_when_missing`, `.leaves_rejected` | no |
-| `snapfile.format_version`, `.header`, `.with_expression`, `.with_redactions` | no |
-| `snapfile.render`, `.render_into`, `.parse`, `.value_of` | no |
-| `snapfile.snapshot_path`, `.new_path`, `.is_rejected`, `.name_ok` | no |
-| `snapfile.read`, `.write`, `.write_rejected`, `.clear_rejected` | no |
-| `snapfile.rejected_under`, `.accept_rejected`, `.stored_for`, `.unused_names` | no |
-| `snapfile.SnapError.message` | no |
-| `snapredact.placeholder`, `.redaction`, `.apply_all`, `.labels` | no |
-| `snapredact.timestamps`, `.uuids`, `.hex_runs`, `.path_prefix`, `.field`, `.json_member` | no |
-| `snapredact.matching`, `.pattern_ok`, `.unix_newlines`, `.trailing_space`, `.cli_defaults` | no |
-| `snapassert.request`, `.with_config`, `.with_redactions`, `.with_expression`, `.named` | no |
-| `snapassert.check`, `.agrees`, `.assert_snapshot` | no |
-| `snapassert.passed`, `.verdict_name`, `.message`, `.diff_of`, `.path_of` | no |
-| `snapassert.render_diff`, `.diff_summary`, `.summarise`, `.failure_count` | no |
-| `snapinline.inline`, `.normalise_inline`, `.indent_of`, `.render_literal` | no |
-| `snapinline.check_inline`, `.agrees_inline`, `.assert_inline` | no |
-| `snapinline.pending_suffix`, `.pending_path`, `.record_pending`, `.pending_edits` | no |
-| `snapinline.clear_pending`, `.render_pending`, `.parse_pending`, `.pending_under` | no |
+Every suite runs green but one case, named in the CHANGELOG under
+`### Known`: `snapassert_tests.nv`'s
+`test_the_reporting_wrapper_is_the_only_io_in_the_module` asserts against
+a stored snapshot the release does not ship, so it can only be recorded
+by a run of `UPDATE_SNAPSHOTS=auto`, and `snapassert.assert_snapshot`'s
+doc example meets the same missing file.
 
 ## Licence
 

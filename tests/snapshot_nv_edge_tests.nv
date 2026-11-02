@@ -1,0 +1,734 @@
+// snapshot_nv_edge_tests.nv — the cases the five API suites have no
+// natural place for.
+//
+// THE FOUR THINGS THIS FILE EXISTS FOR, each of them a statement the
+// API suites cannot make because they hold no files:
+//
+//   1. THE DIFF IS THE PRODUCT AND EQUALITY THE PRIMITIVE.  Three cases
+//      over one pair — nothing changed, one thing changed, and one gone
+//      with one arrived — the last of them chosen so that the line
+//      count, the byte count and the number of members are all
+//      unchanged: a comparison that counted instead of comparing would
+//      answer that nothing happened.
+//   2. A RENAME IS A DELETE AND AN ADD.  The interface has no rename
+//      concept — the five `SnapVerdict` cases are matched, recorded,
+//      absent, differed and faulted — and the diff is a line diff, so a
+//      file that moved is one removal and one addition.  Pinned, so a
+//      later change that starts pairing them has to say so here.
+//   3. WHAT IS NOT COMPARED.  Nothing in the header takes part (the
+//      oracle pins the format's side of that; this pins the
+//      consequence a caller meets), and the snapshot records no
+//      attribute of the file it was taken from — no mtime, no size, no
+//      permission bits — so rewriting that file does not make a
+//      recorded snapshot differ.  The one thing read from the
+//      filesystem is the stored snapshot's own mtime, in exactly one
+//      place: accepting a `.new` over a snapshot that has been written
+//      since.
+//   4. NOTHING, AND LATER, ARE BOTH CLEAN.  A snapshot of an empty
+//      value records and then matches — it is not read back as a
+//      missing file — and two snapshots of an unchanged value taken a
+//      clock second apart are byte-identical, because no moment is in
+//      the format.
+//
+// The probe files live under `_novo/`, and each test owns a directory
+// of its own, so the suite depends on neither the repository's
+// snapshots nor the order the tests run in.
+
+use std.test
+use std.str
+use std.list
+use std.path
+use std.process
+use std.time
+use snappolicy
+use snapfile
+use snapassert
+use snapinline
+
+// Remove a probe directory, so that a second run of this suite starts
+// where the first one did.  A suite whose assertions depend on what an
+// earlier run left under `_novo/` passes once and then fails forever.
+fn wipe(dir: Str) [fs]
+    for entry in fs.read_dir(dir)
+        let child = path.join(dir, entry)
+        if fs.is_dir(child)
+            wipe(child)
+        else
+            let _ = fs.delete(child)
+    let _ = fs.delete(dir)
+
+// A directory listing as a value: sorted, one name per line, with the
+// line ending the last one.  Sorted because a directory walk answers in
+// whatever order the filesystem does.
+fn listing(names: [Str]) -> Str
+    var sorted = names[:]
+    sorted = list.sort(sorted)
+    list.join(sorted, "\n") + "\n"
+
+// A stored snapshot of a value, as a caller would write one.
+fn stored_at(source: Str, assertion: Str, value: Str) -> SnapStored
+    SnapStored { header: snapfile.header(source, assertion), value: value }
+
+// Where a snapshot for this source and assertion lives, or "" when the
+// assertion cannot be a filename.
+fn path_for(c: snappolicy.SnapConfig, source: Str, name: Str) -> Str
+    match snapfile.snapshot_path(c, source, name)
+        Ok(p)  => p
+        Err(_) => ""
+
+@test
+fn test_the_diff_is_the_product_and_equality_the_primitive() [io]
+    let r = snapassert.request("tests/render_tests.nv", "listing")
+    let c = snappolicy.config()
+    let before = listing(["alpha.nv", "beta.nv", "gamma.nv"])
+
+    test.case("nothing changed: the values are equal and there is no diff")
+    test.assert(snapassert.agrees(r, before, listing(["alpha.nv", "beta.nv", "gamma.nv"])))
+    test.assert(snapassert.render_diff(c, before, before) == "")
+    test.assert(snapassert.diff_summary(before, before) == "0 removed, 0 added")
+
+    test.case("the comparison has no rules of its own: a value is compared exactly")
+    // README rule 7.  The redactions are the only transformation there
+    // is, and they ran before the write, so nothing here normalises a
+    // trailing space, a case or a final newline away.
+    test.assert(not snapassert.agrees(r, "a\n", "a \n"))
+    test.assert(not snapassert.agrees(r, "a\n", "A\n"))
+    test.assert(not snapassert.agrees(r, "a\nb", "a\nb\n"))
+
+    test.case("one thing changed: the values differ and the diff names both sides")
+    let one = listing(["alpha.nv", "beta-x.nv", "gamma.nv"])
+    test.assert(not snapassert.agrees(r, before, one))
+    let text = snapassert.render_diff(c, before, one)
+    test.assert(str.contains(text, "beta.nv"))
+    test.assert(str.contains(text, "beta-x.nv"))
+    test.assert(snapassert.diff_summary(before, one) == "1 removed, 1 added")
+
+    test.case("one gone and one arrived: no count sees it, and the diff still does")
+    // "beta.nv" went and "zeta.nv" arrived, and the two names are the
+    // same length: the listing has the same number of lines and the
+    // same number of bytes either way.  A comparison that asked how
+    // many, instead of whether, answers that nothing happened.
+    let swapped = listing(["alpha.nv", "gamma.nv", "zeta.nv"])
+    test.assert(list.len(str.split_lines(before)) == list.len(str.split_lines(swapped)))
+    test.assert(str.len(before) == str.len(swapped))
+    test.assert(not snapassert.agrees(r, before, swapped))
+    test.assert(snapassert.diff_summary(before, swapped) == "1 removed, 1 added")
+    let moved = snapassert.render_diff(c, before, swapped)
+    test.assert(str.contains(moved, "beta.nv"))
+    test.assert(str.contains(moved, "zeta.nv"))
+
+@test
+fn test_a_rename_is_a_delete_and_an_add() [io]
+    // There is no rename in this interface, and this is the case that
+    // says so: `old.nv` becoming `new.nv` is a line removed and a line
+    // added, which a reviewer reads as two changes.  An implementation
+    // that started pairing a delete with an add would move this number.
+    let r = snapassert.request("tests/render_tests.nv", "listing")
+    let c = snappolicy.config()
+    let before = listing(["alpha.nv", "old.nv"])
+    let after = listing(["alpha.nv", "new.nv"])
+    let text = snapassert.render_diff(c, before, after)
+
+    test.case("the verdict is the ordinary difference and not a rename")
+    test.assert(not snapassert.agrees(r, before, after))
+
+    test.case("the diff is one removal and one addition, both shown")
+    test.assert(snapassert.diff_summary(before, after) == "1 removed, 1 added")
+    test.assert(str.contains(text, "-old.nv"))
+    test.assert(str.contains(text, "+new.nv"))
+
+    test.case("and no word in the report's vocabulary is called renamed")
+    let every = [SnapMatched, SnapRecorded("p"), SnapAbsent("q"),
+                 SnapDiffered("r", "s", ""), SnapFaulted(snapfile.SnapMissing("t"))]
+    test.assert(not str.contains(snapassert.summarise(every), "renamed"))
+
+@test
+fn test_nothing_in_the_header_takes_part_in_the_comparison() [io, fs]
+    // README rule 6.  A snapshot whose header was written by an older
+    // run — another source, another assertion name, an expression and
+    // two redaction labels that this run does not have — is still the
+    // same snapshot when the value is the same, because only the value
+    // is compared.
+    let c = snappolicy.with_update(snappolicy.config(), SnapNever)
+    let source = "_novo/snapshot-nv-edge/header/probe.nv"
+    wipe("_novo/snapshot-nv-edge/header")
+    let r = snapassert.with_config(snapassert.request(source, "header"), c)
+    let at = path_for(c, source, "header")
+
+    let foreign = SnapStored {
+        header: snapfile.with_expression(
+                    snapfile.with_redactions(
+                        snapfile.header("somewhere/else.nv", "another_name"),
+                        ["timestamps", "paths"]),
+                    "render(t)"),
+        value: "hello\n" }
+    let _ = snapfile.write(at, foreign)
+
+    test.case("the check matches a header it would not have written itself")
+    test.assert(snapassert.verdict_name(snapassert.check(r, "hello\n")) == "matched")
+
+    test.case("and a match leaves the stored file exactly as it was")
+    match snapfile.read(at)
+        Ok(s)  => test.assert(s.header.assertion == "another_name")
+        Err(_) => test.assert(false)
+    match snapfile.read(at)
+        Ok(s)  => test.assert(snapfile.value_of(s) == "hello\n")
+        Err(_) => test.assert(false)
+
+    test.case("what a reader sees in the header is still what was written")
+    match snapfile.read(at)
+        Ok(s)  => test.assert(list.len(s.header.redactions) == 2)
+        Err(_) => test.assert(false)
+    wipe("_novo/snapshot-nv-edge/header")
+
+@test
+fn test_the_snapshot_is_a_value_and_not_a_stat_of_the_source() [io, fs, time]
+    // Requirement three, from the other side: the package records no
+    // attribute of the file a snapshot was taken from, so a tree that
+    // changed on disk does not make an unchanged value differ.  The
+    // value here is a listing of a real directory, taken twice with a
+    // clock second in between.
+    let c = snappolicy.with_update(snappolicy.config(), SnapAuto)
+    let source = "_novo/snapshot-nv-edge/value/probe.nv"
+    let tree = "_novo/snapshot-nv-edge/value/tree"
+    let r = snapassert.with_config(snapassert.request(source, "listing"), c)
+    wipe("_novo/snapshot-nv-edge/value")
+    let _ = fs.mkdir_all(tree)
+    let _ = fs.write(source, "the test source, which nothing about a snapshot reads\n")
+    let _ = fs.write(tree + "/one.txt", "1")
+    let _ = fs.write(tree + "/two.txt", "2")
+    let first = listing(fs.read_dir(tree))
+    let at = path_for(c, source, "listing")
+
+    test.case("the first reading records")
+    test.assert(snapassert.verdict_name(snapassert.check(r, first)) == "recorded")
+
+    test.case("a later reading of the unchanged tree still matches")
+    time.sleep(1.2)
+    let later = listing(fs.read_dir(tree))
+    test.assert(snapassert.verdict_name(snapassert.check(r, later)) == "matched")
+
+    test.case("and the source file changed under it, which changed nothing")
+    // The snapshot was taken FROM a file, and that file is rewritten
+    // here — another length, another content, a later mtime — because
+    // "no attribute of the source is recorded" is a claim about what
+    // happens when the source moves on and the value does not.
+    let before_mtime = fs.file_mtime(source) ?? 0
+    time.sleep(1.2)
+    let _ = fs.write(source, "a longer file than before, written later, with another mtime\n")
+    let after_mtime = fs.file_mtime(source) ?? 0
+    test.assert(after_mtime > before_mtime)
+    test.assert(snapassert.verdict_name(snapassert.check(r, later)) == "matched")
+
+    test.case("a second recording of the same value a second later is the same bytes")
+    // `SnapAlways` rewrites the file every run.  If the moment were in
+    // the format — a timestamp, an mtime, a size — the two recordings
+    // would not be byte-identical, and a repository would see a change
+    // on every run of an unchanged suite.
+    let always = snapassert.with_config(snapassert.request(source, "listing"),
+                                        snappolicy.with_update(c, SnapAlways))
+    let _ = snapassert.check(always, first)
+    let before_bytes = snapfile.read(at)
+    time.sleep(1.2)
+    let _ = snapassert.check(always, later)
+    let after_bytes = snapfile.read(at)
+    match before_bytes
+        Err(_) => test.assert(false)
+        Ok(a)  => match after_bytes
+            Err(_) => test.assert(false)
+            Ok(b)  => test.assert(snapfile.render(a) == snapfile.render(b))
+    wipe("_novo/snapshot-nv-edge/value")
+
+@test
+fn test_a_snapshot_of_nothing_is_a_snapshot() [io, fs]
+    // Requirement four, first half.  An empty value is a value: it
+    // records, it reads back as an empty value rather than as a file
+    // that was never written, and the second run of it matches.
+    let c = snappolicy.with_update(snappolicy.config(), SnapAuto)
+    let source = "_novo/snapshot-nv-edge/empty/probe.nv"
+    wipe("_novo/snapshot-nv-edge/empty")
+    let r = snapassert.with_config(snapassert.request(source, "nothing"), c)
+    let at = path_for(c, source, "nothing")
+
+    test.case("an empty value records")
+    let first = snapassert.check(r, "")
+    test.assert(snapassert.verdict_name(first) == "recorded")
+    test.assert(snapassert.path_of(first) == at)
+    test.assert(fs.exists(at))
+
+    test.case("the stored file is a header and then nothing at all")
+    match snapfile.read(at)
+        Err(_) => test.assert(false)
+        Ok(s)  => test.assert(str.is_empty(snapfile.value_of(s)))
+
+    test.case("and the second run of nothing matches rather than reading as absent")
+    test.assert(snapassert.verdict_name(snapassert.check(r, "")) == "matched")
+
+    test.case("an inline literal of nothing is a value of nothing too")
+    // The same statement about the other kind of snapshot, and the
+    // empty list a normalised literal is built from: an empty literal
+    // has no lines to take an indentation from and no trailing newline
+    // to keep.
+    test.assert(snapinline.normalise_inline("") == "")
+    test.assert(snapinline.normalise_inline("\n") == "")
+    test.assert(snapinline.indent_of("") == 0)
+    test.assert(snapinline.indent_of("\n") == 0)
+    wipe("_novo/snapshot-nv-edge/empty")
+
+@test
+fn test_the_policy_matrix_over_real_files() [io, fs]
+    // README rule 3's table, one row at a time, on files that really
+    // land.  The two rows a caller cannot guess are `SnapNew`'s — a
+    // missing snapshot is a failure that still leaves the value beside
+    // the snapshot for a person to read — and `SnapAuto`'s, which
+    // records but still refuses a change.
+    let base = "_novo/snapshot-nv-edge/matrix"
+    let source = base + "/probe.nv"
+    let default = snappolicy.config()
+    wipe(base)
+
+    test.case("never: absence is a failure and nothing at all is written")
+    let never = snappolicy.with_update(default, SnapNever)
+    let npath = path_for(never, source, "never")
+    let nnew = snapfile.new_path(never, npath)
+    match snapassert.check(snapassert.with_config(snapassert.request(source, "never"), never), "hello\n")
+        SnapAbsent(p) => test.assert(p == npath)
+        _             => test.assert(false)
+    test.assert(not fs.exists(npath))
+    test.assert(not fs.exists(nnew))
+
+    test.case("new: absence is a failure with the value beside it to read")
+    let r_new = snapassert.request(source, "new")
+    let wpath = path_for(default, source, "new")
+    let wnew = snapfile.new_path(default, wpath)
+    match snapassert.check(r_new, "hello\n")
+        SnapAbsent(p) => test.assert(p == wpath)
+        _             => test.assert(false)
+    test.assert(fs.exists(wnew))
+    match snapfile.read(wnew)
+        Ok(s)  => test.assert(snapfile.value_of(s) == "hello\n")
+        Err(_) => test.assert(false)
+
+    test.case("auto: absence records and passes")
+    let auto = snappolicy.with_update(default, SnapAuto)
+    let r_auto = snapassert.with_config(snapassert.request(source, "auto"), auto)
+    let apath = path_for(auto, source, "auto")
+    let anew = snapfile.new_path(auto, apath)
+    let recorded = snapassert.check(r_auto, "first\n")
+    test.assert(snapassert.verdict_name(recorded) == "recorded")
+    test.assert(snapassert.path_of(recorded) == apath)
+    test.assert(snapassert.passed(recorded))
+    test.assert(str.contains(snapassert.message(recorded), apath))
+
+    test.case("auto: a change fails, leaves the evidence, and keeps the snapshot")
+    match snapassert.check(r_auto, "second\n")
+        SnapDiffered(p, rejected, diff) =>
+            test.assert(p == apath)
+            test.assert(rejected == anew)
+            test.assert(str.len(diff) > 0)
+        _                               => test.assert(false)
+    match snapfile.read(apath)
+        Ok(s)  => test.assert(snapfile.value_of(s) == "first\n")
+        Err(_) => test.assert(false)
+
+    test.case("never: a change is a failure that names no rejected file and writes none")
+    let kpath = path_for(never, source, "kept")
+    let _ = snapfile.write(kpath, stored_at(source, "kept", "kept\n"))
+    let v = snapassert.check(snapassert.with_config(snapassert.request(source, "kept"), never),
+                             "moved\n")
+    test.assert(snapassert.verdict_name(v) == "differed")
+    test.assert(snapassert.path_of(v) == kpath)
+    test.assert(str.contains(snapassert.message(v), "no rejected file was written"))
+    test.assert(str.contains(snapassert.message(v), "re-run"))
+    test.assert(not fs.exists(snapfile.new_path(never, kpath)))
+    test.case("and a message for a difference with nothing to show ends there")
+    test.assert(str.contains(snapassert.message(SnapDiffered(kpath, "", "")), kpath))
+
+    test.case("always: absence records, and a change is overwritten and passes")
+    let always = snappolicy.with_update(default, SnapAlways)
+    let r_always = snapassert.with_config(snapassert.request(source, "always"), always)
+    let gpath = path_for(always, source, "always")
+    test.assert(snapassert.verdict_name(snapassert.check(r_always, "one\n")) == "recorded")
+    test.assert(snapassert.verdict_name(snapassert.check(r_always, "two\n")) == "matched")
+    match snapfile.read(gpath)
+        Ok(s)  => test.assert(snapfile.value_of(s) == "two\n")
+        Err(_) => test.assert(false)
+
+    test.case("a stale rejected file beside a snapshot that matches again is cleared")
+    let clear_path = path_for(default, source, "clear")
+    let clear_new = snapfile.new_path(default, clear_path)
+    let r_clear = snapassert.request(source, "clear")
+    let _ = snapfile.write(clear_path, stored_at(source, "clear", "kept\n"))
+    let moved = snapassert.check(r_clear, "moved\n")
+    test.assert(snapassert.verdict_name(moved) == "differed")
+    test.assert(snapassert.path_of(moved) == clear_path)
+    test.assert(fs.exists(clear_new))
+    match snapassert.check(r_clear, "kept\n")
+        SnapMatched => test.assert(true)
+        _           => test.assert(false)
+    test.assert(not fs.exists(clear_new))
+
+    test.case("the directory walks find what this run wrote")
+    test.assert(list.contains(snapfile.stored_for(default, source), "auto"))
+    test.assert(list.contains(snapfile.stored_for(default, source), "clear"))
+    test.assert(list.len(snapfile.rejected_under(default, base)) >= 1)
+    test.assert(list.contains(snapfile.unused_names(snapfile.stored_for(default, source), ["auto"]),
+                              "clear"))
+
+    test.case("the one io function in the policy module reads the name it names")
+    // README rule 4: one environment reader, and a name it does not
+    // know answers the default rather than refusing, so a typo cannot
+    // turn a suite into a recording.  Set here rather than left to the
+    // runner, because a suite that only ever saw the unset variable
+    // would leave the half that reads a name untested.
+    process.env_set(snappolicy.env_name(), "always")
+    test.assert(snappolicy.update_name(snappolicy.policy_from_env()) == "always")
+    process.env_set(snappolicy.env_name(), "alwayss")
+    test.assert(snappolicy.update_name(snappolicy.policy_from_env()) ==
+                snappolicy.update_name(default.update))
+
+    test.case("every name the reader takes has a name a report can print back")
+    for name in ["never", "new", "auto", "always"]
+        match snappolicy.policy_named(name)
+            None    => test.assert(false)
+            Some(u) => test.assert(snappolicy.update_name(u) == name)
+    wipe(base)
+
+@test
+fn test_a_fault_is_an_answer_and_not_a_raise() [io, fs]
+    // Everything that can go wrong with the file, answered rather than
+    // raised: a name that cannot be a filename, a directory where a
+    // snapshot should be, a header this build does not read, a version
+    // from the future, and a path that cannot be written at all.
+    let base = "_novo/snapshot-nv-edge/faults"
+    let source = base + "/probe.nv"
+    let c = snappolicy.config()
+    wipe(base)
+    let _ = fs.mkdir_all(base + "/snapshots")
+
+    test.case("an assertion name that cannot be a filename")
+    match snapassert.check(snapassert.request(source, "a/b"), "v\n")
+        SnapFaulted(why) => test.assert(str.contains(why.message(), "path separator"))
+        _                => test.assert(false)
+    test.assert(not snapfile.name_ok(""))
+    test.assert(not snapfile.name_ok("renders/a/table"))
+    test.assert(snapfile.name_ok("renders_a_table"))
+    test.assert(str.contains(snapfile.SnapBadName("").message(), "empty"))
+
+    test.case("the two parsers of a refusal, one with a path and one without")
+    test.assert(str.contains(snapfile.SnapMissing("p").message(), "p"))
+    test.assert(str.contains(snapfile.SnapUnreadable("p").message(), "could not read"))
+    test.assert(str.contains(snapfile.SnapUnwritable("p").message(), "could not write"))
+    test.assert(str.contains(snapfile.SnapBadHeader("p", 7).message(), "line 7"))
+    test.assert(str.contains(snapfile.SnapVersionAhead("p", 9).message(), "9"))
+    test.assert(str.contains(snapfile.SnapStale("p").message(), "changed after"))
+    match snapfile.parse("not a snapshot at all")
+        Ok(_)  => test.assert(false)
+        Err(e) => test.assert(str.contains(e.message(), "this text"))
+
+    test.case("a file that is not a snapshot at all")
+    let garbage = path_for(c, source, "garbage")
+    let _ = fs.write(garbage, "not a snapshot\n")
+    match snapassert.check(snapassert.request(source, "garbage"), "v\n")
+        SnapFaulted(why) => test.assert(str.contains(why.message(), "line 1"))
+        _                => test.assert(false)
+
+    test.case("a header with fields and no value delimiter")
+    // No trailing newline either: a text that ended with one splits into
+    // a last empty line, and the empty line is what a parser refuses
+    // first.  This reaches the end of the walk with no delimiter found.
+    let fields_only = path_for(c, source, "fields")
+    let _ = fs.write(fields_only, "--- snapshot-nv 1\nsource: x\nassertion: y")
+    match snapassert.check(snapassert.request(source, "fields"), "v\n")
+        SnapFaulted(why) => test.assert(str.contains(why.message(), "not a snapshot header"))
+        _                => test.assert(false)
+
+    test.case("a version that is a number and not a format")
+    let zero = path_for(c, source, "zero")
+    let _ = fs.write(zero, "--- snapshot-nv 0\nsource: x\n---\nv\n")
+    match snapassert.check(snapassert.request(source, "zero"), "v\n")
+        SnapFaulted(why) => test.assert(str.contains(why.message(), "line 1"))
+        _                => test.assert(false)
+
+    test.case("a version from the future, which this build names and does not read")
+    let ahead = path_for(c, source, "ahead")
+    let _ = fs.write(ahead, "--- snapshot-nv 9\nsource: x\n---\nv\n")
+    match snapassert.check(snapassert.request(source, "ahead"), "v\n")
+        SnapFaulted(why) => test.assert(str.contains(why.message(), "9"))
+        _                => test.assert(false)
+
+    test.case("a directory where a snapshot should be is unreadable, not missing")
+    let adir = path_for(c, source, "adir")
+    let _ = fs.mkdir_all(adir)
+    match snapassert.check(snapassert.request(source, "adir"), "v\n")
+        SnapFaulted(why) => test.assert(str.contains(why.message(), "could not read"))
+        _                => test.assert(false)
+
+    test.case("a path nothing can write, under a file with a directory's name")
+    let wall = base + "/wall"
+    let _ = fs.write(wall, "not a directory\n")
+    let walled = snapassert.with_config(
+                     snapassert.request(wall + "/probe.nv", "walled"),
+                     snappolicy.with_update(c, SnapAuto))
+    match snapassert.check(walled, "v\n")
+        SnapFaulted(why) => test.assert(str.contains(why.message(), "could not write"))
+        _                => test.assert(false)
+
+    test.case("a missing snapshot whose rejected file cannot be written either")
+    // The default policy's own fault: the value would have landed in a
+    // `.new` beside the snapshot, and it could not.  The verdict is a
+    // fault rather than a silence, because a run that says "nothing was
+    // recorded" about a file nothing could write has told a lie.
+    let walled_new = snapassert.with_config(
+                         snapassert.request(wall + "/other.nv", "walled"),
+                         snappolicy.with_update(c, SnapNew))
+    match snapassert.check(walled_new, "v\n")
+        SnapFaulted(why) => test.assert(str.contains(why.message(), "could not write"))
+        _                => test.assert(false)
+
+    test.case("and a difference whose rejected file cannot be written is one too")
+    // Here the snapshot is there and differs, so the `.new` is the only
+    // thing that had to land — and a directory sits where it belongs,
+    // which no write can replace.
+    let against = path_for(c, source, "against")
+    let against_new = snapfile.new_path(c, against)
+    let _ = snapfile.write(against, stored_at(source, "against", "stored\n"))
+    let _ = fs.mkdir_all(against_new)
+    let _ = fs.write(against_new + "/occupied", "in the way of a rejected file\n")
+    match snapassert.check(snapassert.request(source, "against"), "another\n")
+        SnapFaulted(why) => test.assert(str.contains(why.message(), "could not write"))
+        _                => test.assert(false)
+
+    test.case("clearing a rejected file that cannot be removed is a fault")
+    let stuck = path_for(c, source, "stuck")
+    let stuck_new = snapfile.new_path(c, stuck)
+    let _ = fs.mkdir_all(stuck_new)
+    let _ = fs.write(stuck_new + "/occupied", "in the way of a removal\n")
+    match snapfile.clear_rejected(c, stuck)
+        Some(e) => test.assert(str.contains(e.message(), "could not write"))
+        None    => test.assert(false)
+
+    test.case("a path that is not a snapshot path is given the suffix")
+    let plain = base + "/plain.txt"
+    test.assert(snapfile.new_path(c, plain) == plain + c.new_suffix)
+    test.assert(snapfile.is_rejected(c, snapfile.new_path(c, plain)))
+
+    test.case("and the fault carries an answer for every accessor")
+    let f = SnapFaulted(snapfile.SnapMissing("somewhere.snap"))
+    test.assert(snapassert.verdict_name(f) == "faulted")
+    test.assert(not snapassert.passed(f))
+    test.assert(snapassert.path_of(f) == "")
+    test.assert(snapassert.diff_of(f) == "")
+    test.assert(str.len(snapassert.message(f)) > 0)
+    test.assert(str.contains(snapassert.message(SnapMatched), "matched"))
+    test.assert(str.contains(snapassert.message(SnapRecorded("p")), "p"))
+    test.assert(str.contains(snapassert.path_of(SnapRecorded("p")), "p"))
+    test.assert(snapassert.path_of(SnapMatched) == "")
+    test.assert(str.contains(snapassert.summarise([SnapMatched]), "1 snapshot"))
+    test.assert(not str.contains(snapassert.summarise([SnapMatched]), "snapshots"))
+    wipe(base)
+
+@test
+fn test_the_review_flow_accepts_a_rejected_file() [io, fs, time]
+    // The other half of the `.new` file: accepting it, and the one
+    // hazard acceptance has.  A review that runs after a rebase can be
+    // looking at a `.new` written before the snapshot was rewritten
+    // under it, and taking it silently would lose whatever was there.
+    let base = "_novo/snapshot-nv-edge/review"
+    let source = base + "/probe.nv"
+    let c = snappolicy.config()
+    wipe(base)
+    let at = path_for(c, source, "accept")
+    let newer = snapfile.new_path(c, at)
+
+    test.case("a changed value leaves the rejected file and the snapshot alone")
+    let _ = snapfile.write(at, stored_at(source, "accept", "old\n"))
+    match snapassert.check(snapassert.request(source, "accept"), "new\n")
+        SnapDiffered(p, rejected, diff) =>
+            test.assert(p == at)
+            test.assert(rejected == newer)
+            test.assert(str.len(diff) > 0)
+            test.assert(str.contains(snapassert.message(SnapDiffered(p, rejected, diff)),
+                                     "accept_rejected"))
+            test.assert(snapassert.diff_of(SnapDiffered(p, rejected, diff)) == diff)
+        _                               => test.assert(false)
+    match snapfile.read(at)
+        Ok(s)  => test.assert(snapfile.value_of(s) == "old\n")
+        Err(_) => test.assert(false)
+
+    test.case("accepting it moves the rejected value over the snapshot")
+    match snapfile.accept_rejected(c, at)
+        Some(_) => test.assert(false)
+        None    => test.assert(true)
+    match snapfile.read(at)
+        Ok(s)  => test.assert(snapfile.value_of(s) == "new\n")
+        Err(_) => test.assert(false)
+
+    test.case("clearing a rejected file that is no longer there is not an error")
+    match snapfile.clear_rejected(c, at)
+        Some(_) => test.assert(false)
+        None    => test.assert(true)
+
+    test.case("and a rejected file older than the snapshot is refused by name")
+    let stale_at = path_for(c, source, "stale")
+    let stale_new = snapfile.new_path(c, stale_at)
+    match snapfile.write_rejected(c, stale_at, stored_at(source, "stale", "reviewed\n"))
+        Ok(p)  => test.assert(p == stale_new)
+        Err(_) => test.assert(false)
+    time.sleep(1.2)
+    let _ = snapfile.write(stale_at, stored_at(source, "stale", "newer\n"))
+    match snapfile.accept_rejected(c, stale_at)
+        Some(e) => test.assert(str.contains(e.message(), "changed after"))
+        None    => test.assert(false)
+
+    test.case("a rejected file whose snapshot cannot be replaced is a write fault")
+    let blocked = path_for(c, source, "blocked")
+    let _ = fs.mkdir_all(blocked)
+    let _ = snapfile.write_rejected(c, blocked, stored_at(source, "blocked", "waiting\n"))
+    time.sleep(1.2)
+    match snapfile.accept_rejected(c, blocked)
+        Some(e) => test.assert(str.contains(e.message(), "could not write"))
+        None    => test.assert(false)
+
+    test.case("a rejected file with no snapshot at all is an ordinary move")
+    // `is_stale` asks whether the snapshot was written after the
+    // rejected file.  With no snapshot there, nothing was written after
+    // anything, so the hazard does not arise and the move simply lands —
+    // which is the state a first run of a new test is in.
+    let orphan_at = path_for(c, source, "orphan")
+    let _ = snapfile.write_rejected(c, orphan_at, stored_at(source, "orphan", "only this\n"))
+    match snapfile.accept_rejected(c, orphan_at)
+        Some(_) => test.assert(false)
+        None    => test.assert(true)
+    match snapfile.read(orphan_at)
+        Ok(s)  => test.assert(snapfile.value_of(s) == "only this\n")
+        Err(_) => test.assert(false)
+    wipe(base)
+
+@test
+fn test_the_pending_edits_round_trip_through_a_real_file() [io, fs]
+    // The inline half end to end: a mismatch records an edit beside the
+    // test source, a second mismatch appends rather than replaces, the
+    // edits come back bottom up with the indentation a tool re-indents
+    // to, and every malformed record is refused at its own line rather
+    // than guessed at.
+    let base = "_novo/snapshot-nv-edge/pending"
+    let source = base + "/probe.nv"
+    let nested = base + "/nested/probe2.nv"
+    let c = snappolicy.config()
+    let ppath = snapinline.pending_path(c, source)
+    let r = snapassert.request(source, "greeting")
+
+    // A pending file is written beside its test source, and a test
+    // source lives in a directory that is already there.  This probe
+    // source is not a real file, so the test makes its directory first —
+    // and a source whose directory is missing is a write fault, which
+    // the last case below pins.
+    wipe(base)
+    let _ = fs.mkdir_all(base)
+
+    test.case("a mismatch records the edit and answers the difference it would make")
+    let i = snapinline.inline(source, 42, "\n    hello\n")
+    match snapinline.check_inline(r, i, "hallo\n")
+        SnapDiffered(p, rejected, diff) =>
+            test.assert(p == source)
+            test.assert(rejected == ppath)
+            test.assert(str.len(diff) > 0)
+        _                               => test.assert(false)
+    test.assert(fs.exists(ppath))
+
+    test.case("a second edit appends rather than replacing the first")
+    let j = snapinline.inline(source, 7, "\n    one\n")
+    test.assert(snapassert.verdict_name(snapinline.check_inline(r, j, "two\n")) == "differed")
+
+    test.case("and they come back bottom up, with the indentation to rewrite at")
+    match snapinline.pending_edits(c, source)
+        Err(_) => test.assert(false)
+        Ok(es) =>
+            test.assert(list.len(es) == 2)
+            match list.first(es)
+                None      => test.assert(false)
+                Some(top) => test.assert(top.line == 42)
+            match list.last(es)
+                None         => test.assert(false)
+                Some(bottom) =>
+                    test.assert(bottom.line == 7)
+                    test.assert(bottom.indent == 4)
+
+    test.case("a match leaves the file alone, and clearing takes it away")
+    test.assert(snapassert.verdict_name(snapinline.check_inline(r, i, "\n    hello\n")) == "matched")
+    test.assert(fs.exists(ppath))
+    match snapinline.clear_pending(c, source)
+        Some(_) => test.assert(false)
+        None    => test.assert(true)
+    test.assert(not fs.exists(ppath))
+    match snapinline.clear_pending(c, source)
+        Some(_) => test.assert(false)
+        None    => test.assert(true)
+
+    test.case("a pending path that cannot be removed is a fault, not a silence")
+    let stuck = base + "/stuck.nv"
+    let stuck_at = snapinline.pending_path(c, stuck)
+    let _ = fs.mkdir_all(stuck_at)
+    let _ = fs.write(stuck_at + "/occupied", "in the way of a removal\n")
+    match snapinline.clear_pending(c, stuck)
+        Some(e) => test.assert(str.contains(e.message(), "could not write"))
+        None    => test.assert(false)
+
+    test.case("the walk finds one source per pending file, in a nested directory too")
+    let _ = fs.mkdir_all(base + "/nested")
+    test.assert(snapassert.verdict_name(
+                    snapinline.check_inline(snapassert.request(nested, "greeting"),
+                                            snapinline.inline(nested, 1, "\n    a\n"),
+                                            "b\n")) == "differed")
+    test.assert(snapassert.verdict_name(snapinline.check_inline(r, j, "two\n")) == "differed")
+    let found = snapinline.pending_under(c, base)
+    test.assert(list.len(found) == 2)
+    test.assert(list.contains(found, source))
+    test.assert(list.contains(found, nested))
+
+    test.case("a record whose numbers are not numbers is refused at its line")
+    let good = snapinline.render_pending(
+                   [SnapPendingEdit { line: 42, expected: "hello", actual: "hallo", indent: 4 }])
+    let refused = [str.replace(good, "line: 42\n", ""),
+                   str.replace(good, "line: 42", "row: 42"),
+                   str.replace(good, "line: 42", "line: nope"),
+                   str.replace(good, "indent: 4", "indent: x"),
+                   str.replace(good, "--- actual", "--- other"),
+                   str.replace(good, "--- edit", "a stray line\n--- edit")]
+    var refusals = 0
+    for text in refused
+        match snapinline.parse_pending(text)
+            Ok(_)  => test.assert(false)
+            Err(_) =>
+                refusals = refusals + 1
+    test.assert(refusals == list.len(refused))
+
+    test.case("and a blank line between records is read through, not refused")
+    match snapinline.parse_pending(str.replace(good, "--- edit", "\n--- edit"))
+        Err(_) => test.assert(false)
+        Ok(es) => test.assert(list.len(es) == 1)
+
+    test.case("a pending file with a broken record answers a fault, not edits")
+    let _ = fs.write(ppath, str.replace(good, "line: 42", "line: nope"))
+    match snapinline.pending_edits(c, source)
+        Ok(_)  => test.assert(false)
+        Err(e) => test.assert(str.contains(e.message(), "not a snapshot header"))
+    let _ = fs.write(ppath, str.replace(good, "--- edit", "a stray line\n--- edit"))
+    match snapinline.pending_edits(c, source)
+        Ok(_)  => test.assert(false)
+        Err(e) => test.assert(str.contains(e.message(), "not a snapshot header"))
+
+    test.case("a source under a file rather than a directory cannot be recorded")
+    let wall = base + "/wall"
+    let _ = fs.write(wall, "not a directory\n")
+    let blocked_source = wall + "/probe.nv"
+    match snapinline.record_pending(c, blocked_source, SnapPendingEdit { line: 1, expected: "a", actual: "b", indent: 0 })
+        Some(e) => test.assert(str.contains(e.message(), "could not write"))
+        None    => test.assert(false)
+    match snapinline.check_inline(snapassert.request(blocked_source, "greeting"),
+                                  snapinline.inline(blocked_source, 1, "\n    a\n"),
+                                  "b\n")
+        SnapFaulted(why) => test.assert(str.contains(why.message(), "could not write"))
+        _                => test.assert(false)
+    wipe(base)

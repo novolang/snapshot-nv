@@ -1,8 +1,6 @@
 // snapinline.nv — the snapshot that lives in the test, and why it is
 // two steps here.
 //
-// Every body here is a `todo()`; the signatures are the design.
-//
 // AN INLINE SNAPSHOT IS THE EXPECTED VALUE WRITTEN IN THE TEST, and the
 // reason people like it is that the test and its expectation are read
 // together. insta writes one with a procedural macro: on a mismatch,
@@ -37,6 +35,7 @@
 use snappolicy
 use snapfile
 use snapassert
+use snapredact
 
 // The expectation as it was written in the test.
 pub struct SnapInline
@@ -63,6 +62,245 @@ pub struct SnapPendingEdit
     // margin.
     indent: Int
 
+// ── private helpers ──────────────────────────────────────────────────
+//
+// The literal's two rules — what indentation comes off, and what a tool
+// writes back — and the pending file's format, which is the snapshot
+// format's shape with a record per edit.  Private because the public
+// door to each of them is a function.
+
+// The literal without the newline that follows its opening delimiter.
+// A literal with no newline in it is a value already.
+fn after_opening_newline(literal: Str) -> Str []
+    if str.starts_with(literal, "\n")
+        str.slice(literal, 1, str.len(literal))
+    else
+        literal
+
+// Whether a line has nothing but whitespace on it.  The line the
+// closing delimiter sits on and the empty line a literal ending in a
+// newline splits into are both this, and neither is part of the value.
+fn is_blank(line: Str) -> Bool []
+    str.len(str.trim(line)) == 0
+
+// How many spaces a line opens with.  Spaces and not a whitespace
+// class, because the answer is a column count: a tab is not one, and a
+// literal indented with tabs is a literal no normalisation can line up.
+fn leading_spaces(line: Str) -> Int []
+    var n = 0
+    var rest = line
+    while str.starts_with(rest, " ")
+        rest = str.slice(rest, 1, str.len(rest))
+        n = n + 1
+    n
+
+// A line with up to `n` of its leading spaces taken off.  A line with
+// fewer than `n` of them — a short line, or a blank one — is left as it
+// is rather than being cut into.
+fn strip_indent(line: Str, n: Int) -> Str []
+    var out = line
+    var i = 0
+    while i < n and str.starts_with(out, " ")
+        out = str.slice(out, 1, str.len(out))
+        i = i + 1
+    out
+
+// The longest leading whitespace every line with anything on it shares.
+// Blank lines are skipped: an empty line has no indentation of its own,
+// and a minimum that counted one would answer zero for every literal
+// written above an indented closing delimiter.
+fn common_indent(lines: [Str]) -> Int []
+    var best: ?Int = None
+    for line in lines
+        if not is_blank(line)
+            let n = leading_spaces(line)
+            match best
+                Some(b) if b <= n =>
+                    best = Some(b)
+                _                 =>
+                    best = Some(n)
+    best ?? 0
+
+// Whether the last line of a literal is blank, which is what says the
+// value ends with a newline.
+//
+// The empty list cannot happen: `str.split_lines` answers at least one
+// line for every text, including the empty one, so a list of lines is
+// never empty.  The branch is here because the function is total over
+// its type, and it is the caller's guarantee, not this function's, that
+// makes it unreachable.
+fn ends_blank(lines: [Str]) -> Bool []
+    if list.is_empty(lines)
+        // cov: skip — `str.split_lines` answers at least one line for every text, so no caller can reach an empty list
+        false
+    else
+        is_blank(list.get(lines, list.len(lines) - 1, ""))
+
+// The lines that are the value: the literal's own, without the line the
+// closing delimiter sits on.
+fn value_lines(lines: [Str]) -> [Str] []
+    if ends_blank(lines)
+        list.take(lines, list.len(lines) - 1)
+    else
+        lines[:]
+
+// One line of a written literal: the indentation, and nothing at all on
+// a line with nothing on it — trailing space on a blank line is what an
+// editor strips, and a file a tool rewrites must not carry any.
+fn padded(line: Str, pad: Str) -> Str []
+    if str.is_empty(line)
+        line
+    else
+        pad + line
+
+// The actual value as an inline comparison sees it: the literal's own
+// rule first, then the request's redactions.  What is recorded is what
+// was compared.
+fn inline_actual(r: snapassert.SnapRequest, value: Str) -> Str []
+    snapredact.apply_all(r.redactions, normalise_inline(value))
+
+// The edit a mismatch records: the line the literal sits on, what the
+// test says today, what the run produced, and the column a rewrite
+// re-indents to.
+fn pending_edit(r: snapassert.SnapRequest, i: SnapInline, value: Str) -> SnapPendingEdit []
+    SnapPendingEdit {
+        line: i.line,
+        expected: normalise_inline(i.expected),
+        actual: inline_actual(r, value),
+        indent: indent_of(i.expected) }
+
+// The mismatch path: the edit goes where a review tool looks for it,
+// and the verdict carries the pending file's path in the place a stored
+// check carries the rejected file's — with the test source standing in
+// for the snapshot the literal is written against.
+fn pending_verdict(r: snapassert.SnapRequest, i: SnapInline,
+                   value: Str) -> snapassert.SnapVerdict [fs]
+    let edit = pending_edit(r, i, value)
+    let diff = snapassert.render_diff(r.config, normalise_inline(i.expected),
+                                      inline_actual(r, value))
+    match record_pending(r.config, i.source, edit)
+        Some(e) => SnapFaulted(e)
+        None    => SnapDiffered(i.source, pending_path(r.config, i.source), diff)
+
+// The line a pending file opens with.  It carries the format version,
+// so a file from a later build is refused rather than misread — the
+// rule the snapshot format has too, and `snapfile.format_version` is
+// the number, so the two cannot drift apart.
+fn pending_header() -> Str []
+    "--- snapshot-nv pending ${snapfile.format_version()}"
+
+// One field of a record: the marker, the value's lines verbatim, and
+// the newline that ends the field — which belongs to the framing rather
+// than to the value, and is what lets a value ending in a newline
+// round-trip: its last line is the empty one before the marker.
+fn section(marker: Str, value: Str) -> Str []
+    marker + "\n" + list.join(str.split_lines(value), "\n") + "\n"
+
+// One record, which is what a person opening the file reads: where the
+// literal is, and the two values.
+fn edit_text(e: SnapPendingEdit) -> Str []
+    let head = str.join([
+        "--- edit",
+        "line: ${e.line}",
+        "indent: ${e.indent}"],
+        "\n")
+    head + "\n" + section("--- expected", e.expected) + section("--- actual", e.actual)
+
+// The number a record's `key: N` line carries.  `None` when the line is
+// not that field at all or the number does not parse, which the reader
+// turns into a refusal naming the line rather than into a default.
+fn number_field(line: Str, key: Str) -> ?Int []
+    let prefix = key + ": "
+    if str.starts_with(line, prefix)
+        str.to_int(str.slice(line, str.len(prefix), str.len(line)))
+    else
+        None
+
+// The index of the next line equal to a marker at or after `from`, or
+// the length of the list when there is none — which is how the last
+// field of the last record knows where it ends.
+fn marker_at(lines: [Str], from: Int, marker: Str) -> Int []
+    var i = from
+    while i < list.len(lines) and list.get(lines, i, "") != marker
+        i = i + 1
+    i
+
+// The value one field carries: the lines between the marker and the
+// boundary, less the last of them, which is the framing newline.
+fn section_value(lines: [Str], from: Int, to: Int) -> Str []
+    list.join(list.slice(lines, from, to - 1), "\n")
+
+// One record, from its `--- edit` line.  Every refusal names the line
+// it was found on, because the reader's next action is to open the file
+// there.
+fn record_at(lines: [Str], at: Int) -> Result<SnapPendingEdit, snapfile.SnapError> []
+    let line_at = at + 1
+    let indent_at = at + 2
+    let expected_at = at + 3
+    if list.get(lines, expected_at, "") != "--- expected"
+        return Err(snapfile.SnapBadHeader("", expected_at + 1))
+    let n = match number_field(list.get(lines, line_at, ""), "line")
+        None    =>
+            return Err(snapfile.SnapBadHeader("", line_at + 1))
+        Some(v) => v
+    let cols = match number_field(list.get(lines, indent_at, ""), "indent")
+        None    =>
+            return Err(snapfile.SnapBadHeader("", indent_at + 1))
+        Some(v) => v
+    let actual_at = marker_at(lines, expected_at + 1, "--- actual")
+    if actual_at >= list.len(lines)
+        return Err(snapfile.SnapBadHeader("", list.len(lines)))
+    let end_at = marker_at(lines, actual_at + 1, "--- edit")
+    Ok(SnapPendingEdit {
+        line: n,
+        expected: section_value(lines, expected_at + 1, actual_at),
+        actual: section_value(lines, actual_at + 1, end_at),
+        indent: cols })
+
+// Every record in the file, in the order it was written.  A line that
+// is neither a record's start nor blank is a refusal: a pending file is
+// read by tools, and one that guessed at what it did not understand
+// would rewrite the wrong line.
+fn records_from(lines: [Str]) -> Result<[SnapPendingEdit], snapfile.SnapError> []
+    var out: [SnapPendingEdit] = []
+    var i = 1
+    while i < list.len(lines)
+        let line = list.get(lines, i, "")
+        if line == "--- edit"
+            match record_at(lines, i)
+                Err(e) =>
+                    return Err(e)
+                Ok(e)  =>
+                    out = list.push(out, e)
+            i = marker_at(lines, i + 1, "--- edit")
+        elif is_blank(line)
+            i = i + 1
+        else
+            return Err(snapfile.SnapBadHeader("", i + 1))
+    Ok(out)
+
+// The edits in the order a review tool applies them: bottom up, because
+// an edit that changed a literal's length would move every line number
+// below it.
+fn in_line_order(es: Result<[SnapPendingEdit], snapfile.SnapError>) -> Result<[SnapPendingEdit], snapfile.SnapError> []
+    let edits = es!
+    var out = edits[:]
+    Ok(list.sort_by(out, e => 0 - e.line))
+
+// Every file under a directory whose name ends with a suffix, with the
+// suffix taken off again — the sources a review flow has something to
+// show for.  Sorted, so two machines walk them in the same order.
+fn sources_under(dir: Str, suffix: Str) -> [Str] [fs]
+    var found: [Str] = []
+    for entry in fs.read_dir(dir)
+        let child = path.join(dir, entry)
+        if fs.is_dir(child)
+            found = list.append(found, sources_under(child, suffix))
+        elif str.ends_with(entry, suffix)
+            found = list.push(found, str.slice(child, 0, str.len(child) - str.len(suffix)))
+    found = list.sort(found)
+    found
+
 // An inline expectation.
 //
 // ```novo
@@ -73,7 +311,7 @@ pub struct SnapPendingEdit
 //     println("${i.line}")
 // ```
 pub fn inline(source: Str, line: Int, expected: Str) -> SnapInline []
-    todo("snapshot-nv.snapinline.inline")
+    SnapInline { source: source, line: line, expected: expected }
 
 // The literal, turned into the value to compare.
 //
@@ -93,7 +331,15 @@ pub fn inline(source: Str, line: Int, expected: Str) -> SnapInline []
 //     println(snapinline.normalise_inline("\n    a\n    b\n"))
 // ```
 pub fn normalise_inline(literal: Str) -> Str []
-    todo("snapshot-nv.snapinline.normalise_inline")
+    let text = after_opening_newline(literal)
+    let lines = str.split_lines(text)
+    let body = value_lines(lines)
+    let dedented = [strip_indent(line, common_indent(body)) for line in body]
+    let value = list.join(dedented, "\n")
+    if ends_blank(lines) and not list.is_empty(body)
+        value + "\n"
+    else
+        value
 
 // The common indentation of a literal, in columns.
 //
@@ -108,7 +354,8 @@ pub fn normalise_inline(literal: Str) -> Str []
 //     println("${n}")
 // ```
 pub fn indent_of(literal: Str) -> Int []
-    todo("snapshot-nv.snapinline.indent_of")
+    let text = after_opening_newline(literal)
+    common_indent(value_lines(str.split_lines(text)))
 
 // The literal a tool would write for this value at this indentation.
 //
@@ -123,7 +370,9 @@ pub fn indent_of(literal: Str) -> Int []
 //     println(snapinline.render_literal("a\nb\n", 4))
 // ```
 pub fn render_literal(value: Str, indent: Int) -> Str []
-    todo("snapshot-nv.snapinline.render_literal")
+    let pad = str.repeat(" ", indent)
+    let lines = [padded(line, pad) for line in str.split_lines(value)]
+    "\n" + list.join(lines, "\n")
 
 // Compare a value with an inline expectation, and answer.
 //
@@ -146,7 +395,10 @@ pub fn render_literal(value: Str, indent: Int) -> Str []
 // ```
 pub fn check_inline(r: snapassert.SnapRequest, i: SnapInline,
                     value: Str) -> snapassert.SnapVerdict [fs]
-    todo("snapshot-nv.snapinline.check_inline")
+    if agrees_inline(r, i, value)
+        SnapMatched
+    else
+        pending_verdict(r, i, value)
 
 // Compare an inline expectation with a value, with no file anywhere.
 //
@@ -164,7 +416,19 @@ pub fn check_inline(r: snapassert.SnapRequest, i: SnapInline,
 //     println("${same}")
 // ```
 pub fn agrees_inline(r: snapassert.SnapRequest, i: SnapInline, value: Str) -> Bool []
-    todo("snapshot-nv.snapinline.agrees_inline")
+    inline_actual(r, value) == normalise_inline(i.expected)
+
+// Report an inline mismatch through `std.test`, naming the line the
+// literal is on.
+//
+// A function rather than two lines inside `assert_inline`, so that the
+// failure path is one uncovered place with one reason rather than two.
+//
+// cov: skip — runs only when an inline assertion fails, which fails the
+// calling test
+fn report_inline(i: SnapInline, v: snapassert.SnapVerdict) [io]
+    test.case("line " + str.from_int(i.line))
+    test.fail(snapassert.message(v))
 
 // Report an inline mismatch through `std.test`.
 //
@@ -181,7 +445,11 @@ pub fn agrees_inline(r: snapassert.SnapRequest, i: SnapInline, value: Str) -> Bo
 //     snapinline.assert_inline(r, i, "hello")
 // ```
 pub fn assert_inline(r: snapassert.SnapRequest, i: SnapInline, value: Str) [fs, io]
-    todo("snapshot-nv.snapinline.assert_inline")
+    let v = check_inline(r, i, value)
+    if not snapassert.passed(v)
+        // cov: skip — the failure path of an inline assertion, which
+        // fails the calling test
+        report_inline(i, v)
 
 // What a pending file is called: `.pending-snap`.
 //
@@ -195,7 +463,7 @@ pub fn assert_inline(r: snapassert.SnapRequest, i: SnapInline, value: Str) [fs, 
 //     println(snapinline.pending_suffix())
 // ```
 pub fn pending_suffix() -> Str []
-    todo("snapshot-nv.snapinline.pending_suffix")
+    ".pending-snap"
 
 // The pending file beside a test source.
 //
@@ -207,7 +475,7 @@ pub fn pending_suffix() -> Str []
 //     println(snapinline.pending_path(snappolicy.config(), "tests/render_tests.nv"))
 // ```
 pub fn pending_path(c: snappolicy.SnapConfig, source: Str) -> Str []
-    todo("snapshot-nv.snapinline.pending_path")
+    source + pending_suffix()
 
 // Append an edit to the pending file, creating it if it is absent.
 //
@@ -226,13 +494,34 @@ pub fn pending_path(c: snappolicy.SnapConfig, source: Str) -> Str []
 // ```
 pub fn record_pending(c: snappolicy.SnapConfig, source: Str,
                       e: SnapPendingEdit) -> ?snapfile.SnapError [fs]
-    todo("snapshot-nv.snapinline.record_pending")
+    let at = pending_path(c, source)
+    let existing = fs.read(at) ?? ""
+    // A file that is not there yet is created AS a pending file, header
+    // and all: `parse_pending` refuses a first line that is not the
+    // header, so a first append without one would leave a file that the
+    // package's own `pending_edits` could only answer a fault for, and
+    // the review walk that told a tool to open it would have been
+    // pointing at something unreadable.  An existing file is appended to
+    // as it stands, header or not, because appending is what this does
+    // and the reader is the one that refuses what it cannot read.
+    let text = if str.is_empty(existing)
+        pending_header() + "\n"
+    else
+        existing
+    if fs.write(at, text + edit_text(e))
+        None
+    else
+        Some(snapfile.SnapUnwritable(at))
 
 // Every pending edit for a test source, in line order.
 //
 // In LINE order, and descending, because a tool applying them rewrites
 // the file from the bottom up — an edit that changed a literal's length
 // would move every line number below it.
+//
+// No pending file at all is no edits rather than a fault: every run in
+// which the inline snapshots matched leaves nothing behind, and that is
+// the ordinary state of a suite.
 //
 // ```novo
 // use snappolicy
@@ -246,7 +535,10 @@ pub fn record_pending(c: snappolicy.SnapConfig, source: Str,
 // ```
 pub fn pending_edits(c: snappolicy.SnapConfig,
                      source: Str) -> Result<[SnapPendingEdit], snapfile.SnapError> [fs]
-    todo("snapshot-nv.snapinline.pending_edits")
+    let at = pending_path(c, source)
+    match fs.read(at)
+        None       => Ok([])
+        Some(text) => in_line_order(parse_pending(text))
 
 // Remove the pending file for a test source.
 //
@@ -264,7 +556,13 @@ pub fn pending_edits(c: snappolicy.SnapConfig,
 //         None    => println("cleared")
 // ```
 pub fn clear_pending(c: snappolicy.SnapConfig, source: Str) -> ?snapfile.SnapError [fs]
-    todo("snapshot-nv.snapinline.clear_pending")
+    let at = pending_path(c, source)
+    if not fs.exists(at)
+        None
+    else if fs.delete(at)
+        None
+    else
+        Some(snapfile.SnapUnwritable(at))
 
 // The pending file's text, from a list of edits.
 //
@@ -279,7 +577,10 @@ pub fn clear_pending(c: snappolicy.SnapConfig, source: Str) -> ?snapfile.SnapErr
 //     println(snapinline.render_pending([]))
 // ```
 pub fn render_pending(es: [SnapPendingEdit]) -> Str []
-    todo("snapshot-nv.snapinline.render_pending")
+    var out = pending_header() + "\n"
+    for e in es
+        out = out + edit_text(e)
+    out
 
 // The inverse of `render_pending`.
 //
@@ -292,7 +593,18 @@ pub fn render_pending(es: [SnapPendingEdit]) -> Str []
 //         Err(e) => println(e.message())
 // ```
 pub fn parse_pending(text: Str) -> Result<[SnapPendingEdit], snapfile.SnapError> []
-    todo("snapshot-nv.snapinline.parse_pending")
+    // A file written by hand may not end in a newline.  The boundary the
+    // last field is measured from is the newline the writer always
+    // leaves, and it is added rather than assumed away.
+    let framed = if str.ends_with(text, "\n")
+        text
+    else
+        text + "\n"
+    let lines = str.split_lines(framed)
+    if list.get(lines, 0, "") != pending_header()
+        Err(snapfile.SnapBadHeader("", 1))
+    else
+        records_from(lines)
 
 // Every test source under a directory that has a pending file.
 //
@@ -309,4 +621,4 @@ pub fn parse_pending(text: Str) -> Result<[SnapPendingEdit], snapfile.SnapError>
 //     println("${list.len(found)}")
 // ```
 pub fn pending_under(c: snappolicy.SnapConfig, dir: Str) -> [Str] [fs]
-    todo("snapshot-nv.snapinline.pending_under")
+    sources_under(dir, pending_suffix())

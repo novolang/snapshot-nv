@@ -1,8 +1,5 @@
 // snapfile_tests.nv — the format, asserted from strings.
 //
-// RED ON PURPOSE: every body under `src/` is a `todo()`, so every
-// assertion here reaches `not implemented: snapshot-nv.<module>.<fn>`.
-//
 // THE CASES THAT MATTER ARE THE VALUES THAT LOOK LIKE THE FORMAT.  A
 // snapshot of a YAML document, of a patch file, of a table with a `---`
 // rule in it — each of them contains the delimiter, and a
@@ -125,20 +122,20 @@ fn test_a_path_is_the_source_stem_and_the_assertion_name() [io]
 
     test.case("and a rejected path is recognisable")
     test.assert(snapfile.is_rejected(c, "tests/snapshots/a__b.snap.new"))
-    test.assert(snapfile.is_rejected(c, "tests/snapshots/a__b.snap") == false)
+    test.assert(not snapfile.is_rejected(c, "tests/snapshots/a__b.snap"))
 
 @test
 fn test_an_assertion_name_that_cannot_be_a_filename_is_refused() [io]
     let c = snappolicy.config()
 
     test.case("a separator")
-    test.assert(snapfile.name_ok("renders/a/table") == false)
+    test.assert(not snapfile.name_ok("renders/a/table"))
     match snapfile.snapshot_path(c, "tests/t.nv", "renders/a/table")
         Ok(_)  => test.assert(false)
         Err(_) => test.assert(true)
 
     test.case("the empty name")
-    test.assert(snapfile.name_ok("") == false)
+    test.assert(not snapfile.name_ok(""))
 
     test.case("and an ordinary one")
     test.assert(snapfile.name_ok("a_wide_table"))
@@ -161,17 +158,17 @@ fn test_the_file_calls_are_thin_over_the_format() [io, fs]
         Err(e) => test.assert(str.len(e.message()) > 0)
 
     test.case("writing answers a fault or nothing")
-    match snapfile.write("target/snapshot-nv-probe.snap", stored("hello\n"))
+    match snapfile.write("_novo/snapshot-nv-probe.snap", stored("hello\n"))
         Some(e) => test.assert(str.len(e.message()) > 0)
         None    => test.assert(true)
 
     test.case("a rejected file answers where it landed")
-    match snapfile.write_rejected(c, "target/snapshot-nv-probe.snap", stored("other\n"))
+    match snapfile.write_rejected(c, "_novo/snapshot-nv-probe.snap", stored("other\n"))
         Ok(p)  => test.assert(snapfile.is_rejected(c, p))
         Err(e) => test.assert(str.len(e.message()) > 0)
 
     test.case("clearing a rejected file that is not there is not an error")
-    match snapfile.clear_rejected(c, "target/snapshot-nv-probe.snap")
+    match snapfile.clear_rejected(c, "_novo/snapshot-nv-probe.snap")
         Some(e) => test.assert(str.len(e.message()) > 0)
         None    => test.assert(true)
 
@@ -186,6 +183,6 @@ fn test_the_review_flow_walks_sorted_paths() [io, fs]
     test.assert(list.len(snapfile.stored_for(c, "tests/render_tests.nv")) >= 0)
 
     test.case("and accepting what is not there is refused rather than silent")
-    match snapfile.accept_rejected(c, "target/snapshot-nv-nothing.snap")
+    match snapfile.accept_rejected(c, "_novo/snapshot-nv-nothing.snap")
         None    => test.assert(false)
         Some(e) => test.assert(str.len(e.message()) > 0)
